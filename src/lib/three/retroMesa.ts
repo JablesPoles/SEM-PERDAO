@@ -12,6 +12,8 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { Reu, EXPRESSOES } from './reus';
+import { avatarColor } from '@/components/avatar';
 
 // Paleta "Brutal Minimal — Sem Perdão" (mesmos tokens do globals.css)
 const COR = {
@@ -203,6 +205,13 @@ export class RetroMesa {
   private pointer = new THREE.Vector2(-2, -2);
   private cartas: Carta[] = [];
   private provas: Carta[] = [];
+  private reus: Reu[] = [];
+  private pendulo!: THREE.Group;
+  private spot!: THREE.SpotLight;
+  private brilho!: THREE.PointLight;
+  private bulbo!: THREE.Mesh;
+  private blinkAte = 0;
+  private proximoCaos = 3;
   private raf = 0;
   private pixelSize: number;
   private disposed = false;
@@ -221,7 +230,7 @@ export class RetroMesa {
     this.camera.position.set(0, 5.4, 7.4);
 
     this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.target.set(0, 0.4, 0);
+    this.controls.target.set(0, 0.55, 0);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.autoRotate = true;
@@ -232,11 +241,13 @@ export class RetroMesa {
     this.controls.minPolarAngle = Math.PI / 5;
     this.controls.enablePan = false;
 
-    // névoa fecha o vazio ao redor da mesa
-    this.scene.background = new THREE.Color(0x131217);
-    this.scene.fog = new THREE.Fog(0x131217, 11, 28);
+    // névoa fecha o vazio ao redor da mesa — o breu É o porão
+    this.scene.background = new THREE.Color(0x0c0b0f);
+    this.scene.fog = new THREE.Fog(0x0c0b0f, 10, 24);
 
     this.montarCenario();
+    this.montarLampada();
+    this.montarReus();
     this.montarCartas(opts.pretas, opts.brancas);
 
     // ── passe de pixelização ──
@@ -296,19 +307,13 @@ export class RetroMesa {
   }
 
   private montarCenario() {
-    // luz: hemisfério creme/tinta + chave quente + recorte vermelho (assinatura SP)
-    const ambiente = new THREE.HemisphereLight(0xf2efe9, 0x26252b, 1.1);
-    const chave = new THREE.DirectionalLight(0xfff4e0, 2.2);
-    chave.position.set(3, 8, 4);
-    chave.castShadow = true;
-    chave.shadow.mapSize.set(512, 512); // sombra de baixa resolução, de propósito
-    chave.shadow.camera.left = -6;
-    chave.shadow.camera.right = 6;
-    chave.shadow.camera.top = 6;
-    chave.shadow.camera.bottom = -6;
-    const recorte = new THREE.DirectionalLight(COR.red, 1.2);
+    // Tribunal do Porão: quase-escuridão. A luz principal é a lâmpada pendurada
+    // (montarLampada); aqui só um ambiente mínimo pra silhueta existir e o
+    // recorte vermelho que vem "de lugar nenhum" — é o julgamento no ar.
+    const ambiente = new THREE.AmbientLight(0x3a3843, 0.85);
+    const recorte = new THREE.DirectionalLight(COR.red, 1.0);
     recorte.position.set(-6, 2.5, -6);
-    this.scene.add(ambiente, chave, recorte);
+    this.scene.add(ambiente, recorte);
 
     // mesa: cilindro baixo e largo, com friso vermelho na borda
     const tampo = new THREE.Mesh(
@@ -351,6 +356,78 @@ export class RetroMesa {
       new THREE.PointsMaterial({ color: 0x6b6a72, size: 0.035, transparent: true, opacity: 0.7 })
     );
     this.scene.add(poeira);
+  }
+
+  /** A lâmpada pendurada — a personagem-narradora do porão (conceito §2.2). */
+  private montarLampada() {
+    this.pendulo = new THREE.Group();
+    this.pendulo.position.set(0, 8.2, 0);
+    const fio = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02, 0.02, 4.2, 5),
+      new THREE.MeshLambertMaterial({ color: 0x0a0a0c })
+    );
+    fio.position.y = -2.1;
+    const cupula = new THREE.Mesh(
+      new THREE.ConeGeometry(0.42, 0.32, 8),
+      new THREE.MeshLambertMaterial({ color: COR.panel, flatShading: true })
+    );
+    cupula.position.y = -4.2;
+    this.bulbo = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0xfff4e0 })
+    );
+    this.bulbo.position.y = -4.42;
+    // cone calculado pra molhar a mesa inteira E as cabeças dos réus (r=5.15)
+    this.spot = new THREE.SpotLight(0xfff4e0, 85, 0, 1.12, 0.45, 2);
+    this.spot.position.y = -4.4;
+    this.spot.castShadow = true;
+    this.spot.shadow.mapSize.set(512, 512);
+    this.spot.shadow.bias = -0.002;
+    this.spot.target.position.set(0, -8.2, 0); // aponta reto pra baixo e acompanha o balanço
+    this.brilho = new THREE.PointLight(0xffe9c4, 4, 7, 2);
+    this.brilho.position.y = -4.3;
+    this.pendulo.add(fio, cupula, this.bulbo, this.spot, this.spot.target, this.brilho);
+    this.scene.add(this.pendulo);
+  }
+
+  /** Os réus sentados + o martelo do juiz à espera do veredito. */
+  private montarReus() {
+    // azimute 0° = a cadeira vazia da frente (o POV do jogador, futuramente)
+    const assentos: { nome: string; az: number; juiz?: boolean; manequim?: boolean }[] = [
+      { nome: 'NATH', az: 180, juiz: true },
+      { nome: 'GABS', az: 45 },
+      { nome: 'VANZO', az: 100 },
+      { nome: 'PPVAZ', az: 140 },
+      { nome: 'RANDO', az: 225, manequim: true },
+      { nome: 'POLES', az: 300 },
+    ];
+    assentos.forEach((a, i) => {
+      const r = new Reu(a.nome, avatarColor(i + 1), a);
+      const rad = (a.az * Math.PI) / 180;
+      const R = 5.15;
+      r.group.position.set(Math.sin(rad) * R, 0, Math.cos(rad) * R);
+      r.group.lookAt(0, 0, 0);
+      this.scene.add(r.group);
+      this.reus.push(r);
+    });
+
+    const martelo = new THREE.Group();
+    const cabo = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.045, 0.045, 0.55, 6),
+      new THREE.MeshLambertMaterial({ color: COR.panel, flatShading: true })
+    );
+    cabo.rotation.z = Math.PI / 2;
+    const cabecaMartelo = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.11, 0.3, 6),
+      new THREE.MeshLambertMaterial({ color: COR.red, flatShading: true })
+    );
+    cabecaMartelo.rotation.x = Math.PI / 2;
+    cabecaMartelo.position.x = -0.25;
+    martelo.add(cabo, cabecaMartelo);
+    martelo.children.forEach((m) => (m.castShadow = true));
+    martelo.position.set(0.7, 0.08, -3.4);
+    martelo.rotation.y = 0.5;
+    this.scene.add(martelo);
   }
 
   private montarCartas(pretas: string[], brancas: string[]) {
@@ -473,6 +550,27 @@ export class RetroMesa {
 
     this.controls.update();
 
+    // lâmpada: balanço lento + zumbido elétrico + apagões de susto
+    this.pendulo.rotation.z = Math.sin(t * 0.9) * 0.05;
+    this.pendulo.rotation.x = Math.sin(t * 0.63 + 1.7) * 0.035;
+    let fator = 0.94 + 0.06 * Math.sin(t * 31) * Math.sin(t * 17.3);
+    if (t > this.blinkAte && Math.random() < 0.002) this.blinkAte = t + 0.07 + Math.random() * 0.12;
+    if (t < this.blinkAte) fator = 0.12;
+    this.spot.intensity = 85 * fator;
+    this.brilho.intensity = 4 * fator;
+    (this.bulbo.material as THREE.MeshBasicMaterial).color.setHex(fator < 0.5 ? 0x55504a : 0xfff4e0);
+
+    // os réus vivem: respiração + caos aleatório (expressões e socos na mesa)
+    if (t > this.proximoCaos) {
+      this.proximoCaos = t + 1.2 + Math.random() * 2.8;
+      const vivos = this.reus.filter((r) => !r.manequim);
+      const alvo = vivos[Math.floor(Math.random() * vivos.length)];
+      if (Math.random() < 0.45) alvo.baterNaMesa();
+      const exps = EXPRESSOES.filter((e) => e !== alvo.expressao);
+      alvo.setExpressao(exps[Math.floor(Math.random() * exps.length)]);
+    }
+    for (const r of this.reus) r.tick(t, dt);
+
     // animações de entrada
     for (const c of this.cartas) {
       if (c.anim) {
@@ -509,6 +607,7 @@ export class RetroMesa {
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('click', this.onClick);
     this.controls.dispose();
+    for (const r of this.reus) r.dispose();
     this.rt.dispose();
     this.blitMat.dispose();
     for (const t of this.texturas) t.dispose();

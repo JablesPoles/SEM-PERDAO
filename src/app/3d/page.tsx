@@ -8,7 +8,7 @@ import Link from 'next/link';
 import { ALL_BLACK, ALL_WHITE } from '@/lib/cards';
 import type { RetroMesa } from '@/lib/three/retroMesa';
 
-const PIXELS = [2, 3, 4, 6];
+const PIXELS = [1, 2, 3];
 
 function sortear<T>(arr: T[], n: number): T[] {
   const copia = [...arr];
@@ -22,7 +22,7 @@ function sortear<T>(arr: T[], n: number): T[] {
 export default function Mesa3D() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cenaRef = useRef<RetroMesa | null>(null);
-  const [pixel, setPixel] = useState(4);
+  const [pixel, setPixel] = useState(2);
   const [pronto, setPronto] = useState(false);
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export default function Mesa3D() {
       const { RetroMesa } = await import('@/lib/three/retroMesa');
       if (!viva || !canvasRef.current) return;
       cenaRef.current = new RetroMesa(canvasRef.current, {
-        pixelSize: 4,
+        pixelSize: 2,
         pretas: sortear(ALL_BLACK, 1).map((c) => c.text),
         brancas: sortear(ALL_WHITE, 10).map((c) => c.text),
       });
