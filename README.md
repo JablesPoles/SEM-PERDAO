@@ -35,4 +35,4 @@ Igual o FDP: importa o repo no [vercel.com](https://vercel.com/new), adiciona `N
 
 ## Cartas
 
-Baralho traduzido/adaptado de PT-PT para PT-BR a partir do **Cartas Contra Tugas** (`ref/Cartas Contra Tugas.pdf`), um baralho fã de Cards Against Humanity. Cards Against Humanity e derivados são [CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/2.0/) — uso não comercial, mesma licença. Design: "Brutal Minimal — Sem Perdão" (opção 1c das direções visuais em `ref/`).
+Baralho adaptado do **Cartas Contra Tugas** (`ref/Cartas Contra Tugas.pdf`), um baralho fã de Cards Against Humanity — abrasileirado: texto em PT-BR natural e referências de Portugal trocadas por equivalentes do Brasil. Cards Against Humanity e derivados são [CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/2.0/) — uso não comercial, mesma licença. Design: "Brutal Minimal — Sem Perdão" (opção 1c das direções visuais em `ref/`).
