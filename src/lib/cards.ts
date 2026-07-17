@@ -313,7 +313,7 @@ const WHITE_TEXTS: string[] = [
   'Castrar anões.',
 ];
 
-function countBlanks(text: string): number {
+export function countBlanks(text: string): number {
   return (text.match(/____/g) ?? []).length;
 }
 

@@ -1,22 +1,27 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChatMessage, GameState, PlayerAction, Reaction } from '../lib/types';
+import { ChatMessage, GameMode, GameState, PlayerAction, Reaction } from '../lib/types';
+import { CustomCards, sanitizeCustomCards } from '../lib/customCards';
 import { supabase } from '../lib/supabase';
 import {
   advanceToNextRound,
   applyJudgePick,
   applyReveal,
   applySubmission,
+  applyVote,
   getActivePlayers,
+  getGameMode,
   initGame,
   JUDGE_SECONDS,
   MIN_PLAYERS,
   pendingSubmitters,
+  pendingVoters,
   removePlayer,
   Seat,
   seatNewcomers,
   shuffle,
   SUBMIT_SECONDS,
+  votingChoicesFor,
 } from '../lib/game';
 import { ALL_BLACK, ALL_WHITE } from '../lib/cards';
 import { BOT_NAMES, getBotJudgeIndex, getBotSubmission } from '../lib/ai';
@@ -27,11 +32,6 @@ export interface LobbyPlayer {
   id: number;
   name: string;
   isBot?: boolean;
-}
-
-export interface DisconnectedPlayer {
-  id: number;
-  name: string;
 }
 
 /** Alguém batendo na porta de um jogo em andamento, esperando o host. */
@@ -48,7 +48,6 @@ interface UseMultiplayerReturn {
   isConnected: boolean;
   error: string | null;
   wasKicked: boolean;
-  disconnectedPlayer: DisconnectedPlayer | null;
   chatMessages: ChatMessage[];
   reactions: Reaction[];
   pendingJoins: PendingJoin[];
@@ -61,34 +60,41 @@ interface UseMultiplayerReturn {
   sendAction: (action: PlayerAction) => void;
   sendChat: (text: string) => void;
   sendReaction: (emoji: string) => void;
-  startGame: (scoreLimit: number) => void;
+  startGame: (scoreLimit: number, mode: GameMode) => void;
   addBot: () => void;
   removeBot: (botId: number) => void;
-  removeDisconnectedPlayer: () => void;
   kickPlayer: (playerId: number) => void;
   approveJoin: (clientId: string) => void;
   rejectJoin: (clientId: string) => void;
   leaveLobby: () => void;
-  disconnect: () => void;
+  disconnect: () => Promise<void>;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 10;
-// Presença oscila em conexão móvel ruim; só pausa o jogo se o jogador ficar
-// fora por este tempo.
+// Presença oscila em conexão móvel ruim; só marca o assento como offline se o
+// jogador ficar fora por este tempo. A partida nunca é pausada.
 const DISCONNECT_GRACE_MS = 5000;
 // Ids de bot ficam bem acima dos de humanos para nunca colidirem.
 const BOT_ID_BASE = 100;
+
+// O relógio visual e os timeouts do host usam a mesma origem. Reagendar após
+// uma jogada/revelação nunca devolve o tempo inteiro para a fase.
+export function remainingPhaseMs(gs: GameState, seconds: number): number {
+  return Math.max(0, gs.phaseStartedAt + seconds * 1000 - Date.now());
+}
 
 /**
  * O host guarda o estado completo; cada convidado só recebe o que pode ver:
  * a própria mão, nunca as pilhas de compra, e as jogadas da rodada de acordo
  * com a fase — durante as jogadas só o "quem já jogou" (cartas ocultas),
- * durante o julgamento as cartas anônimas (dono = -1), e na virada da rodada
- * tudo aberto.
+ * durante o julgamento as cartas anônimas (cada jogador só reconhece a sua no
+ * modo Democracia), votos secretos até o resultado, e na virada tudo aberto.
  */
-function redactStateFor(gs: GameState, targetId: number): GameState {
+export function redactStateFor(gs: GameState, targetId: number): GameState {
   return {
     ...gs,
+    blackPool: [],
+    whitePool: [],
     blackDeck: [],
     whiteDeck: [],
     players: gs.players.map((p) =>
@@ -99,17 +105,28 @@ function redactStateFor(gs: GameState, targetId: number): GameState {
         return { playerId: s.playerId, cards: [] };
       }
       if (gs.phase === 'judging') {
-        return { playerId: -1, cards: s.cards };
+        return {
+          playerId:
+            getGameMode(gs) === 'democracy' && s.playerId === targetId
+              ? targetId
+              : -1,
+          cards: s.cards,
+        };
       }
       return s;
     }),
+    votes:
+      gs.phase === 'judging'
+        ? gs.votes.map((vote) => ({ ...vote, submissionIndex: -1 }))
+        : gs.votes,
   };
 }
 
 export function useMultiplayer(
   roomCode: string,
   playerName: string | null,
-  initialIsHost: boolean
+  initialIsHost: boolean,
+  customCards: CustomCards
 ): UseMultiplayerReturn {
   // Quem comanda a mesa pode mudar no meio do jogo: se o host sair, o próximo
   // pela ordem de entrada assume. Handlers leem refs para a promoção não
@@ -152,8 +169,19 @@ export function useMultiplayer(
       const game = parsed
         ? {
             ...parsed,
+            mode: parsed.mode ?? 'judge',
+            votes: parsed.votes ?? [],
+            votingOptions: parsed.votingOptions ?? [],
+            votingRound: parsed.votingRound ?? 1,
+            tieBreak: parsed.tieBreak ?? false,
             revealed: parsed.revealed ?? [],
             phaseStartedAt: parsed.phaseStartedAt ?? Date.now(),
+            players: parsed.players.map((player) => ({
+              ...player,
+              connected: player.connected ?? true,
+            })),
+            blackPool: parsed.blackPool?.length ? parsed.blackPool : ALL_BLACK,
+            whitePool: parsed.whitePool?.length ? parsed.whitePool : ALL_WHITE,
           }
         : null;
       return {
@@ -173,7 +201,6 @@ export function useMultiplayer(
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [wasKicked, setWasKicked] = useState(false);
-  const [disconnectedPlayer, setDisconnectedPlayer] = useState<DisconnectedPlayer | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [reactions, setReactions] = useState<Reaction[]>([]);
   const [pendingJoins, setPendingJoins] = useState<PendingJoin[]>([]);
@@ -188,8 +215,8 @@ export function useMultiplayer(
   const pendingNextRoundRef = useRef<Set<number>>(new Set());
   const lobbyPlayersRef = useRef<LobbyPlayer[]>(lobbyPlayers);
   const myPlayerIdRef = useRef<number | null>(myPlayerId);
-  const disconnectedPlayerRef = useRef<DisconnectedPlayer | null>(null);
   const isConnectedRef = useRef(false);
+  const customCardsRef = useRef(customCards);
 
   // clientId → playerId: retries de `join` não criam jogador duplicado.
   const clientPlayerMapRef = useRef<Map<string, number>>(new Map());
@@ -214,8 +241,8 @@ export function useMultiplayer(
   useEffect(() => { awaitingApprovalRef.current = awaitingApproval; }, [awaitingApproval]);
   useEffect(() => { lobbyPlayersRef.current = lobbyPlayers; }, [lobbyPlayers]);
   useEffect(() => { myPlayerIdRef.current = myPlayerId; }, [myPlayerId]);
-  useEffect(() => { disconnectedPlayerRef.current = disconnectedPlayer; }, [disconnectedPlayer]);
   useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
+  useEffect(() => { customCardsRef.current = customCards; }, [customCards]);
 
   const send = useCallback((event: string, payload: Record<string, unknown>) => {
     channelRef.current?.send({ type: 'broadcast', event, payload });
@@ -258,14 +285,18 @@ export function useMultiplayer(
     scheduleBotRef.current(gs);
   }, [broadcastState, hostStateKey]);
 
-  const clearDisconnected = useCallback((playerId?: number) => {
-    const dp = disconnectedPlayerRef.current;
-    if (dp && (playerId === undefined || dp.id === playerId)) {
-      disconnectedPlayerRef.current = null;
-      setDisconnectedPlayer(null);
-      if (isHost) send('player_reconnected', { playerId: dp.id });
-    }
-  }, [isHost, send]);
+  const setPlayerConnected = useCallback((playerId: number, connected: boolean) => {
+    if (!isHostRef.current) return;
+    const gs = hostGameRef.current;
+    const player = gs?.players.find((candidate) => candidate.id === playerId && !candidate.eliminated);
+    if (!gs || !player || (player.connected ?? true) === connected) return;
+    commitHostState({
+      ...gs,
+      players: gs.players.map((candidate) =>
+        candidate.id === playerId ? { ...candidate, connected } : candidate
+      ),
+    });
+  }, [commitHostState]);
 
   const cancelDisconnectTimer = useCallback((playerId: number) => {
     const t = disconnectTimersRef.current.get(playerId);
@@ -273,6 +304,18 @@ export function useMultiplayer(
       clearTimeout(t);
       disconnectTimersRef.current.delete(playerId);
     }
+  }, []);
+
+  // Uma reconexão pode criar a presença nova antes de a antiga emitir `leave`.
+  // Sempre consulta o retrato atual do canal para esse evento atrasado não
+  // derrubar alguém que já voltou.
+  const isPlayerPresent = useCallback((playerId: number) => {
+    const presence = channelRef.current?.presenceState() ?? {};
+    return Object.values(presence).some((metas) =>
+      (metas as unknown as { playerId?: number }[]).some(
+        (meta) => meta.playerId === playerId
+      )
+    );
   }, []);
 
   const applyHostAction = useCallback((action: PlayerAction, fromPlayerId: number) => {
@@ -289,9 +332,15 @@ export function useMultiplayer(
       if (gs.phase !== 'judging' || gs.czarId !== fromPlayerId) return;
       if (!Number.isInteger(action.index)) return;
       gs = applyJudgePick(gs, action.index);
+    } else if (action.type === 'vote') {
+      if (gs.phase !== 'judging' || getGameMode(gs) !== 'democracy') return;
+      if (action.phaseStartedAt !== gs.phaseStartedAt) return;
+      gs = applyVote(gs, fromPlayerId, action.index);
     } else if (action.type === 'next_round') {
       pendingNextRoundRef.current.add(fromPlayerId);
-      const activeHumans = getActivePlayers(gs.players).filter((p) => p.isHuman);
+      const activeHumans = getActivePlayers(gs.players).filter(
+        (p) => p.isHuman && p.connected !== false
+      );
       if (pendingNextRoundRef.current.size >= activeHumans.length) {
         pendingNextRoundRef.current.clear();
         // Aprovados no meio do jogo só sentam aqui, entre rodadas.
@@ -318,6 +367,7 @@ export function useMultiplayer(
    * - jogadas: bots jogam escalonados; quem for humano e passar do tempo tem
    *   cartas aleatórias jogadas pela mesa (AFK nunca trava a rodada);
    * - julgamento: juiz-bot decide rápido; juiz humano AFK decide no timeout;
+   * - democracia: bots/offline votam rápido e humanos AFK votam no timeout;
    * - fim de rodada: avança sozinho depois de um respiro, sem esperar todos.
    */
   const scheduleBot = useCallback((gs: GameState) => {
@@ -325,7 +375,7 @@ export function useMultiplayer(
     clearBotTimers();
 
     if (gs.phase === 'submitting') {
-      const bots = pendingSubmitters(gs).filter((p) => !p.isHuman);
+      const bots = pendingSubmitters(gs).filter((p) => !p.isHuman || p.connected === false);
       bots.forEach((bot, i) => {
         botTimersRef.current.push(setTimeout(() => {
           const cur = hostGameRef.current;
@@ -345,12 +395,62 @@ export function useMultiplayer(
           if (!now || now.phase !== 'submitting' || !now.blackCard) return;
           applyHostAction({ type: 'submit', cardIds: getBotSubmission(p.hand, now.blackCard.pick) }, p.id);
         }
-      }, SUBMIT_SECONDS * 1000));
+      }, remainingPhaseMs(gs, SUBMIT_SECONDS)));
     } else if (gs.phase === 'judging') {
+      if (getGameMode(gs) === 'democracy') {
+        const votingRound = gs.votingRound;
+        const votingStartedAt = gs.phaseStartedAt;
+        const automatic = pendingVoters(gs).filter(
+          (player) => !player.isHuman || player.connected === false
+        );
+        automatic.forEach((player, index) => {
+          botTimersRef.current.push(setTimeout(() => {
+            const current = hostGameRef.current;
+            if (
+              !current ||
+              current.phase !== 'judging' ||
+              getGameMode(current) !== 'democracy' ||
+              current.votingRound !== votingRound ||
+              current.phaseStartedAt !== votingStartedAt
+            ) return;
+            const choices = votingChoicesFor(current, player.id);
+            if (!choices.length) return;
+            const choice = choices[Math.floor(Math.random() * choices.length)];
+            applyHostAction({ type: 'vote', index: choice, phaseStartedAt: current.phaseStartedAt }, player.id);
+          }, 1100 + index * 750 + Math.random() * 600));
+        });
+
+        botTimersRef.current.push(setTimeout(() => {
+          const current = hostGameRef.current;
+          if (
+            !current ||
+            current.phase !== 'judging' ||
+            getGameMode(current) !== 'democracy' ||
+            current.votingRound !== votingRound ||
+            current.phaseStartedAt !== votingStartedAt
+          ) return;
+          for (const player of pendingVoters(current)) {
+            const latest = hostGameRef.current;
+            if (
+              !latest ||
+              latest.phase !== 'judging' ||
+              getGameMode(latest) !== 'democracy' ||
+              latest.votingRound !== votingRound ||
+              latest.phaseStartedAt !== votingStartedAt
+            ) return;
+            const choices = votingChoicesFor(latest, player.id);
+            if (!choices.length) continue;
+            const choice = choices[Math.floor(Math.random() * choices.length)];
+            applyHostAction({ type: 'vote', index: choice, phaseStartedAt: latest.phaseStartedAt }, player.id);
+          }
+        }, remainingPhaseMs(gs, JUDGE_SECONDS)));
+        return;
+      }
+
       const czar = gs.players.find((p) => p.id === gs.czarId);
       if (!czar || czar.eliminated) return;
 
-      if (!czar.isHuman) {
+      if (!czar.isHuman || czar.connected === false) {
         // Juiz-bot faz o teatro completo: vira as provas uma a uma e só
         // depois bate o martelo.
         const unrevealed = gs.submissions
@@ -386,7 +486,7 @@ export function useMultiplayer(
           const fin = hostGameRef.current;
           if (!fin || fin.phase !== 'judging' || fin.czarId !== czar.id) return;
           applyHostAction({ type: 'judge', index: getBotJudgeIndex(fin.submissions.length) }, czar.id);
-        }, JUDGE_SECONDS * 1000));
+        }, remainingPhaseMs(gs, JUDGE_SECONDS)));
       }
     } else if (gs.phase === 'round-end') {
       // Ninguém precisa apertar nada: a rodada vira sozinha.
@@ -426,7 +526,8 @@ export function useMultiplayer(
         if (typeof m.playerId === 'number') present.add(m.playerId);
       }
     }
-    present.delete(goneHostId);
+    // `leave` de um socket velho pode chegar depois do `join` do socket novo.
+    if (present.has(goneHostId)) return;
     if (!present.size) return;
 
     const successor = Math.min(...present);
@@ -439,8 +540,9 @@ export function useMultiplayer(
     setHostId(myId);
     try { sessionStorage.setItem('sp-host-room', roomCode); } catch { /* melhor esforço */ }
 
-    // Bots viviam no host antigo; sem o estado deles, saem junto.
-    const lobby = lobbyPlayersRef.current.filter((lp) => lp.id !== goneHostId && !lp.isBot);
+    // Bots viviam no host antigo; sem o estado deles, saem junto. O assento do
+    // host antigo fica reservado e offline para ele poder voltar depois.
+    const lobby = lobbyPlayersRef.current.filter((lp) => !lp.isBot);
     lobbyPlayersRef.current = lobby;
     setLobbyPlayers(lobby);
     nextPlayerIdRef.current = Math.max(nextPlayerIdRef.current, ...lobby.map((l) => l.id + 1), 1);
@@ -451,26 +553,53 @@ export function useMultiplayer(
     if (gs && gs.phase !== 'game-end' && gs.phase !== 'setup') {
       const players = gs.players
         .filter((p) => p.isHuman)
-        .map((p) => (p.id === goneHostId ? { ...p, eliminated: true, hand: [] } : { ...p, hand: [] }));
+        .map((p) => ({ ...p, connected: present.has(p.id), hand: [] }));
       const remaining = getActivePlayers(players);
       if (remaining.length < MIN_PLAYERS) {
         const winner = [...remaining].sort((a, b) => b.score - a.score)[0] ?? null;
         commitHostState({ ...gs, players, phase: 'game-end', winner, submissions: [], blackDeck: [], whiteDeck: [] });
       } else {
+        // O pool do host antigo nunca foi enviado (anti-trapaça). Se ele não
+        // estiver disponível, o novo host usa seu baralho local e recupera
+        // também cartas próprias que já tinham aparecido na tela.
+        const local = sanitizeCustomCards(customCardsRef.current);
+        const visibleBlack = gs.blackCard?.id.startsWith('cb-') ? [gs.blackCard] : [];
+        const visibleWhite = [
+          ...gs.players.flatMap((p) => p.hand),
+          ...gs.submissions.flatMap((s) => s.cards),
+        ].filter((card) => card.id.startsWith('cw-'));
+        const dedupe = <T extends { id: string }>(cards: T[]) =>
+          [...new Map(cards.map((card) => [card.id, card])).values()];
+        const blackPool = gs.blackPool?.length
+          ? gs.blackPool
+          : dedupe([...ALL_BLACK, ...local.black, ...visibleBlack]);
+        const whitePool = gs.whitePool?.length
+          ? gs.whitePool
+          : dedupe([...ALL_WHITE, ...local.white, ...visibleWhite]);
         // Redistribui a rodada atual com baralhos novos.
-        const czarId = remaining.some((p) => p.id === gs.czarId)
-          ? gs.czarId
-          : remaining[0].id;
+        const mode = getGameMode(gs);
+        const czarId = mode === 'democracy'
+          ? -1
+          : remaining.some((p) => p.id === gs.czarId)
+            ? gs.czarId
+            : remaining[0].id;
         const redealt: GameState = {
           ...gs,
+          mode,
           players,
           czarId,
           submissions: [],
+          votes: [],
+          votingOptions: [],
+          votingRound: 1,
+          tieBreak: false,
           roundWinnerId: null,
           winner: null,
           phase: 'submitting',
-          blackDeck: shuffle(ALL_BLACK),
-          whiteDeck: shuffle(ALL_WHITE),
+          blackPool,
+          whitePool,
+          blackDeck: shuffle(blackPool),
+          whiteDeck: shuffle(whitePool),
         };
         // Reaproveita init parcial: repõe mãos e tira carta preta nova.
         const withHands = advanceToNextRound({ ...redealt, round: redealt.round - 1, czarId });
@@ -514,6 +643,8 @@ export function useMultiplayer(
           // clientId repetido → só reenvia welcome + estado.
           if (clientPlayerMapRef.current.has(joinerId)) {
             const existingId = clientPlayerMapRef.current.get(joinerId)!;
+            cancelDisconnectTimer(existingId);
+            setPlayerConnected(existingId, true);
             send('welcome', { clientId: joinerId, playerId: existingId });
             broadcastLobby(lobbyPlayersRef.current);
             if (hostGameRef.current) broadcastState(hostGameRef.current);
@@ -525,11 +656,13 @@ export function useMultiplayer(
 
           // Reconexão de sessão nova (outra aba, celular que morreu): o mesmo
           // nome ainda é dono do assento — devolve em vez de criar jogador.
-          const seat = gs?.players.find((p) => p.name === name && !p.eliminated && p.isHuman);
+          const seat = gs?.players.find(
+            (p) => p.name === name && !p.eliminated && p.isHuman && p.connected === false
+          );
           if (gameOn && seat) {
             clientPlayerMapRef.current.set(joinerId, seat.id);
             cancelDisconnectTimer(seat.id);
-            clearDisconnected(seat.id);
+            setPlayerConnected(seat.id, true);
             if (!lobbyPlayersRef.current.some((lp) => lp.id === seat.id)) {
               const back = [...lobbyPlayersRef.current, { id: seat.id, name }].sort((a, b) => a.id - b.id);
               lobbyPlayersRef.current = back;
@@ -539,16 +672,6 @@ export function useMultiplayer(
               persistHostLobby();
             }
             send('welcome', { clientId: joinerId, playerId: seat.id });
-            broadcastState(gs!);
-            return;
-          }
-
-          const dp = disconnectedPlayerRef.current;
-          if (dp && dp.name === name) {
-            cancelDisconnectTimer(dp.id);
-            clearDisconnected(dp.id);
-            clientPlayerMapRef.current.set(joinerId, dp.id);
-            send('welcome', { clientId: joinerId, playerId: dp.id });
             if (hostGameRef.current) broadcastState(hostGameRef.current);
             return;
           }
@@ -626,10 +749,11 @@ export function useMultiplayer(
           const { playerId } = (payload ?? {}) as { playerId?: number };
           if (playerId !== undefined) {
             cancelDisconnectTimer(playerId);
-            clearDisconnected(playerId);
+            setPlayerConnected(playerId, true);
           }
           if (hostGameRef.current) broadcastState(hostGameRef.current);
           broadcastLobby(lobbyPlayersRef.current);
+          send('host_changed', { hostId: hostIdRef.current });
         })
         // ── Chat ────────────────────────────────────────────────────────
         .on('broadcast', { event: 'chat' }, ({ payload }) => {
@@ -656,20 +780,23 @@ export function useMultiplayer(
           broadcastLobby(updated);
           persistHostLobby();
         })
-        // ── Quedas (broadcast pra todo mundo ver a pausa) ───────────────
-        .on('broadcast', { event: 'player_disconnected' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          const { playerId, name } = payload as { playerId: number; name: string };
-          setDisconnectedPlayer({ id: playerId, name });
-        })
-        .on('broadcast', { event: 'player_reconnected' }, () => {
-          if (isHostRef.current) return;
-          setDisconnectedPlayer(null);
+        .on('broadcast', { event: 'leave_game' }, ({ payload }) => {
+          if (!isHostRef.current) return;
+          const { playerId } = payload as { playerId: number };
+          cancelDisconnectTimer(playerId);
+          // O evento chega antes de o canal desaparecer da presença. Confere
+          // um instante depois; a queda normal mantém o grace period maior.
+          const timer = setTimeout(() => {
+            disconnectTimersRef.current.delete(playerId);
+            if (!isPlayerPresent(playerId)) setPlayerConnected(playerId, false);
+          }, 1000);
+          disconnectTimersRef.current.set(playerId, timer);
         })
         // ── Presença: detecta quedas inesperadas ────────────────────────
         .on('presence', { event: 'leave' }, ({ leftPresences }) => {
           for (const p of leftPresences) {
-            const { playerId, name } = p as unknown as { playerId: number; name: string };
+            const { playerId } = p as unknown as { playerId: number };
+            if (playerId === undefined) continue;
 
             // Convidados vigiam o host: se a mesa perde o dono, o próximo da
             // fila assume em vez de todo mundo encarar um tabuleiro congelado.
@@ -678,7 +805,7 @@ export function useMultiplayer(
                 cancelDisconnectTimer(playerId);
                 const t = setTimeout(() => {
                   disconnectTimersRef.current.delete(playerId);
-                  setDisconnectedPlayer({ id: playerId, name: name ?? 'Host' });
+                  if (isPlayerPresent(playerId)) return;
                   maybePromoteSelfRef.current(playerId);
                 }, DISCONNECT_GRACE_MS);
                 disconnectTimersRef.current.set(playerId, t);
@@ -689,16 +816,22 @@ export function useMultiplayer(
             if (playerId === hostIdRef.current) continue;
 
             const gs = hostGameRef.current;
-            // Sem jogo → saiu do lobby; libera o assento.
+            // Sem jogo → libera o assento só depois da mesma tolerância a
+            // reconexões; `leave_lobby` continua sendo imediato.
             if (!gs || gs.phase === 'setup') {
-              const updated = lobbyPlayersRef.current.filter((lp) => lp.id !== playerId);
-              if (updated.length !== lobbyPlayersRef.current.length) {
+              cancelDisconnectTimer(playerId);
+              const timer = setTimeout(() => {
+                disconnectTimersRef.current.delete(playerId);
+                if (isPlayerPresent(playerId)) return;
+                const updated = lobbyPlayersRef.current.filter((lp) => lp.id !== playerId);
+                if (updated.length === lobbyPlayersRef.current.length) return;
                 lobbyPlayersRef.current = updated;
                 setLobbyPlayers(updated);
                 lobbySeqRef.current++;
                 broadcastLobby(updated);
                 persistHostLobby();
-              }
+              }, DISCONNECT_GRACE_MS);
+              disconnectTimersRef.current.set(playerId, timer);
               continue;
             }
             if (gs.phase === 'game-end') continue;
@@ -711,10 +844,8 @@ export function useMultiplayer(
             cancelDisconnectTimer(playerId);
             const timer = setTimeout(() => {
               disconnectTimersRef.current.delete(playerId);
-              const dp = { id: playerId, name: player.name ?? name };
-              disconnectedPlayerRef.current = dp;
-              setDisconnectedPlayer(dp);
-              send('player_disconnected', dp);
+              if (isPlayerPresent(playerId)) return;
+              setPlayerConnected(playerId, false);
             }, DISCONNECT_GRACE_MS);
             disconnectTimersRef.current.set(playerId, timer);
           }
@@ -724,15 +855,17 @@ export function useMultiplayer(
             const { playerId } = p as unknown as { playerId: number };
             if (playerId === undefined) continue;
             cancelDisconnectTimer(playerId);
-            if (
-              !isHostRef.current &&
-              playerId === hostIdRef.current &&
-              disconnectedPlayerRef.current?.id === hostIdRef.current
-            ) {
-              setDisconnectedPlayer(null);
+            if (!isHostRef.current && playerId === hostIdRef.current) {
               send('request_state', { playerId: myPlayerIdRef.current });
             }
-            if (isHostRef.current) clearDisconnected(playerId);
+            if (isHostRef.current) {
+              setPlayerConnected(playerId, true);
+              if (playerId !== hostIdRef.current) {
+                // Quem voltou pode ter perdido o anúncio da migração enquanto
+                // estava offline; reafirma quem é o host atual.
+                send('host_changed', { hostId: hostIdRef.current });
+              }
+            }
           }
         })
         // Novo host se anunciou — todo mundo segue, e o antigo (se voltar)
@@ -743,11 +876,15 @@ export function useMultiplayer(
           hostIdRef.current = newHostId;
           setHostId(newHostId);
           cancelDisconnectTimer(newHostId);
-          setDisconnectedPlayer(null);
-          disconnectedPlayerRef.current = null;
           if (newHostId !== myPlayerIdRef.current && isHostRef.current) {
             isHostRef.current = false;
             setIsHost(false);
+            if (heartbeatRef.current) {
+              clearInterval(heartbeatRef.current);
+              heartbeatRef.current = null;
+            }
+            for (const timer of botTimersRef.current) clearTimeout(timer);
+            botTimersRef.current = [];
             try { sessionStorage.removeItem('sp-host-room'); } catch { /* melhor esforço */ }
           }
         })
@@ -757,11 +894,12 @@ export function useMultiplayer(
             setIsConnected(true);
             setError(null);
 
-            if (isHost) {
-              channel.track({ playerId: 0, name: playerName });
+            if (isHostRef.current) {
+              channel.track({ playerId: hostIdRef.current, name: playerName });
               if (hostGameRef.current) {
-                broadcastState(hostGameRef.current);
-                scheduleBotRef.current(hostGameRef.current);
+                setPlayerConnected(hostIdRef.current, true);
+                if (hostGameRef.current) broadcastState(hostGameRef.current);
+                if (hostGameRef.current) scheduleBotRef.current(hostGameRef.current);
               }
               broadcastLobby(lobbyPlayersRef.current);
 
@@ -850,10 +988,10 @@ export function useMultiplayer(
     // `isHost` fica de fora de propósito: handlers leem isHostRef, então a
     // promoção no meio do jogo muda o comportamento sem derrubar o canal
     // (o que perderia presença e o broadcast da promoção).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     roomCode, playerName, pidKey, send, broadcastState, broadcastLobby,
-    applyHostAction, cancelDisconnectTimer, clearDisconnected, persistHostLobby,
+    applyHostAction, cancelDisconnectTimer, isPlayerPresent, setPlayerConnected,
+    persistHostLobby,
   ]);
 
   const sendChat = useCallback((text: string) => {
@@ -873,6 +1011,7 @@ export function useMultiplayer(
       id: clientIdRef.current + Date.now() + Math.random().toString(36).slice(2, 6),
       emoji,
       name: playerName ?? '?',
+      playerId: myPlayerIdRef.current ?? 0,
       ts: Date.now(),
     };
     setReactions((prev) => [...prev.slice(-24), r]);
@@ -914,7 +1053,7 @@ export function useMultiplayer(
     persistHostLobby();
   }, [isHost, broadcastLobby, persistHostLobby]);
 
-  const startGame = useCallback((scoreLimit: number) => {
+  const startGame = useCallback((scoreLimit: number, mode: GameMode) => {
     if (!isHost) return;
     const lobby = lobbyPlayersRef.current;
     if (lobby.length < MIN_PLAYERS) return;
@@ -925,22 +1064,9 @@ export function useMultiplayer(
       isHuman: !lp.isBot,
     }));
     persistHostLobby();
-    commitHostState(initGame(seats, scoreLimit));
+    const custom = sanitizeCustomCards(customCardsRef.current);
+    commitHostState(initGame(seats, scoreLimit, mode, custom.black, custom.white));
   }, [isHost, commitHostState, persistHostLobby]);
-
-  const removeDisconnectedPlayer = useCallback(() => {
-    if (!isHost) return;
-    const dp = disconnectedPlayerRef.current;
-    if (!dp) return;
-    const gs = hostGameRef.current;
-    if (!gs) return;
-
-    commitHostState(removePlayer(gs, dp.id));
-
-    disconnectedPlayerRef.current = null;
-    setDisconnectedPlayer(null);
-    send('player_reconnected', {});
-  }, [isHost, commitHostState, send]);
 
   // Host remove alguém de propósito (lobby ou meio do jogo).
   const kickPlayer = useCallback((playerId: number) => {
@@ -997,9 +1123,38 @@ export function useMultiplayer(
     if (channelRef.current) supabase.removeChannel(channelRef.current);
   }, [send]);
 
-  const disconnect = useCallback(() => {
-    if (channelRef.current) supabase.removeChannel(channelRef.current);
-  }, []);
+  const disconnect = useCallback(async () => {
+    const channel = channelRef.current;
+    if (!channel) return;
+
+    const playerId = myPlayerIdRef.current;
+    const currentGame = gameStateRef.current;
+    const gameOn = !!currentGame && currentGame.phase !== 'setup' && currentGame.phase !== 'game-end';
+
+    if (!isHostRef.current && playerId !== null && gameOn) {
+      try {
+        await channel.send({
+          type: 'broadcast',
+          event: 'leave_game',
+          payload: { playerId },
+        });
+      } catch {
+        // A presença também detecta a saída; este evento só elimina a espera.
+      }
+    }
+
+    if (isHostRef.current && playerId !== null) {
+      try {
+        // Saída voluntária: se voltar, retorna como jogador no assento antigo,
+        // não como um segundo host com snapshot desatualizado.
+        sessionStorage.setItem(pidKey, String(playerId));
+        sessionStorage.removeItem('sp-host-room');
+      } catch { /* melhor esforço */ }
+    }
+
+    await supabase.removeChannel(channel);
+    if (channelRef.current === channel) channelRef.current = null;
+  }, [pidKey]);
 
   return {
     role: isHost ? 'host' : (myPlayerId !== null ? 'guest' : 'connecting'),
@@ -1009,7 +1164,6 @@ export function useMultiplayer(
     isConnected,
     error,
     wasKicked,
-    disconnectedPlayer,
     chatMessages,
     reactions,
     pendingJoins,
@@ -1031,7 +1185,6 @@ export function useMultiplayer(
     startGame,
     addBot,
     removeBot,
-    removeDisconnectedPlayer,
     kickPlayer,
     approveJoin,
     rejectJoin,

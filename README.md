@@ -9,6 +9,11 @@ Jogo de cartas estilo Cards Against Humanity pra jogar no navegador com a galera
 - O juiz escolhe a melhor resposta às cegas — quem jogou leva 1 ponto.
 - Primeiro a bater o limite (5/7/10) vence. Mínimo 3 na mesa (dá pra completar com bots).
 
+O anfitrião escolhe entre dois modos no lobby:
+
+- **1 Juiz:** regra clássica acima; o juiz não joga e decide a rodada.
+- **Democracia:** todo mundo joga e vota em segredo, sem poder votar na própria resposta. Empate abre um segundo turno entre as finalistas; persistindo, a mesa sorteia para a rodada nunca travar.
+
 ## Rodando
 
 ```bash
@@ -19,6 +24,8 @@ npm run dev
 O multiplayer usa [Supabase Realtime](https://supabase.com/docs/guides/realtime) (canais de broadcast — não precisa de banco). Copie `.env.example` para `.env.local` e preencha com as chaves de um projeto Supabase gratuito (pode reusar o do FDP — os canais têm prefixo próprio).
 
 O host da sala é a autoridade do jogo: aplica as ações de todos, roda os bots e envia pra cada jogador só o que ele pode ver (ninguém recebe a mão dos outros; no julgamento as cartas chegam anônimas).
+
+Se alguém perder a conexão durante a partida, o assento, a mão e os pontos são preservados. A mesa joga automaticamente por esse jogador até ele voltar; ao recarregar ou reabrir a mesma sala, a sessão recupera o lugar. Se o host cair, o próximo jogador conectado assume sem congelar a partida.
 
 ## Estrutura
 
@@ -36,3 +43,5 @@ Igual o FDP: importa o repo no [vercel.com](https://vercel.com/new), adiciona `N
 ## Cartas
 
 Baralho adaptado do **Cartas Contra Tugas** (`ref/Cartas Contra Tugas.pdf`), um baralho fã de Cards Against Humanity — abrasileirado: texto em PT-BR natural e referências de Portugal trocadas por equivalentes do Brasil. Cards Against Humanity e derivados são [CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/2.0/) — uso não comercial, mesma licença. Design: "Brutal Minimal — Sem Perdão" (opção 1c das direções visuais em `ref/`).
+
+O anfitrião pode abrir **Baralho** no lobby e acrescentar cartas pretas ou brancas. Elas ficam salvas apenas no `localStorage` daquele navegador e entram junto do baralho base em todos os reshuffles da partida. Nas pretas, cada `____` é uma lacuna (máximo de 3); quando nenhuma é informada, o jogo acrescenta uma automaticamente.

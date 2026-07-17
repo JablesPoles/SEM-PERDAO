@@ -4,11 +4,17 @@ import { useRouter } from 'next/navigation';
 import { useMultiplayer } from '../../../hooks/useMultiplayer';
 import { MIN_PLAYERS, DEFAULT_SCORE_LIMIT } from '../../../lib/game';
 import { GameBoard } from '../../../components/GameBoard';
-import { DisconnectOverlay } from '../../../components/DisconnectOverlay';
 import { ChatPanel } from '../../../components/ChatPanel';
+import { CustomDeckEditor } from '../../../components/CustomDeckEditor';
 import { avatarColor, initials } from '../../../components/avatar';
-import { ChatMessage } from '../../../lib/types';
+import { ChatMessage, GameMode } from '../../../lib/types';
 import { playSound } from '../../../lib/sounds';
+import {
+  CustomCards,
+  emptyCustomCards,
+  loadCustomCards,
+  saveCustomCards,
+} from '../../../lib/customCards';
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -144,12 +150,20 @@ export default function SalaPage({ params }: PageProps) {
 
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [scoreLimit, setScoreLimit] = useState(DEFAULT_SCORE_LIMIT);
+  const [gameMode, setGameMode] = useState<GameMode>('judge');
   const [showPlayers, setShowPlayers] = useState(false);
+  const [showDeckEditor, setShowDeckEditor] = useState(false);
+  const [customCards, setCustomCards] = useState<CustomCards>(emptyCustomCards);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setCustomCards(loadCustomCards()), 0);
+    return () => window.clearTimeout(id);
+  }, []);
 
   const initialIsHost =
     typeof window !== 'undefined' && sessionStorage.getItem('sp-host-room') === roomCode;
 
-  const mp = useMultiplayer(roomCode, nameInput, initialIsHost);
+  const mp = useMultiplayer(roomCode, nameInput, initialIsHost, customCards);
   // Flag viva: o host pode mudar no meio do jogo se o original sair.
   const isHost = mp.isHost;
 
@@ -172,7 +186,18 @@ export default function SalaPage({ params }: PageProps) {
       setSysMsgs((m) => [...m, { id: `sys-${Date.now()}-${m.length}`, playerId: -99, name: 'mesa', text, ts: Date.now() }]);
 
     if (gs.phase === 'submitting' && (prev.round !== gs.round || prev.czarId !== gs.czarId)) {
-      push(`⚖ ${nameOf(gs.czarId)} assumiu o martelo — rodada ${gs.round}`);
+      push(
+        (gs.mode ?? 'judge') === 'democracy'
+          ? `🗳 urna aberta — todo mundo joga na rodada ${gs.round}`
+          : `⚖ ${nameOf(gs.czarId)} assumiu o martelo — rodada ${gs.round}`
+      );
+    }
+    if (
+      gs.phase === 'judging' &&
+      prev.phase !== 'judging' &&
+      (gs.mode ?? 'judge') === 'democracy'
+    ) {
+      push('🗳 votação secreta aberta — não vale votar na própria');
     }
     if (gs.phase === 'round-end' && prev.phase !== 'round-end' && gs.roundWinnerId !== null) {
       push(`☠ ${nameOf(gs.roundWinnerId)} levou a rodada`);
@@ -288,9 +313,11 @@ export default function SalaPage({ params }: PageProps) {
           onSubmit={(cardIds) => mp.sendAction({ type: 'submit', cardIds })}
           onReveal={(index) => mp.sendAction({ type: 'reveal', index })}
           onJudge={(index) => mp.sendAction({ type: 'judge', index })}
+          onVote={(index, phaseStartedAt) => mp.sendAction({ type: 'vote', index, phaseStartedAt })}
           onNextRound={() => mp.sendAction({ type: 'next_round' })}
-          onRestart={() => { mp.disconnect(); router.push('/'); }}
+          onRestart={() => { void mp.disconnect().finally(() => router.push('/')); }}
           reactions={mp.reactions}
+          messages={mp.chatMessages}
           onReact={mp.sendReaction}
         />
 
@@ -338,14 +365,6 @@ export default function SalaPage({ params }: PageProps) {
               você entra no começo da próxima rodada…
             </span>
           </div>
-        )}
-
-        {mp.disconnectedPlayer && (
-          <DisconnectOverlay
-            player={mp.disconnectedPlayer}
-            isHost={isHost}
-            onRemove={mp.removeDisconnectedPlayer}
-          />
         )}
 
         {/* Ações flutuantes: canto inferior esquerdo */}
@@ -399,7 +418,9 @@ export default function SalaPage({ params }: PageProps) {
             <div className="w-full max-w-sm text-center flex flex-col items-center gap-5">
               <span className="font-display text-paper text-3xl leading-tight">SAIR DA PARTIDA?</span>
               <span className="text-red font-bold text-[14px]">
-                {isHost ? 'O jogo será encerrado para todos.' : 'Você será removido da mesa.'}
+                {isHost
+                  ? 'A mesa continua: outro jogador assume e seu lugar fica guardado.'
+                  : 'A mesa continua no automático e seu lugar fica guardado pra volta.'}
               </span>
               <div className="flex gap-3 w-full">
                 <button
@@ -409,7 +430,7 @@ export default function SalaPage({ params }: PageProps) {
                   Cancelar
                 </button>
                 <button
-                  onClick={() => { mp.disconnect(); router.push('/'); }}
+                  onClick={() => { void mp.disconnect().finally(() => router.push('/')); }}
                   className="flex-1 h-13 rounded-xl border-2 border-red text-red font-bold text-[14px] transition-all hover:bg-red/10 active:scale-95"
                 >
                   Sair
@@ -426,7 +447,8 @@ export default function SalaPage({ params }: PageProps) {
 
   // Lobby
   const roomUrl = typeof window !== 'undefined' ? `${window.location.origin}/sala/${roomCode}` : '';
-  const canStart = mp.lobbyPlayers.length >= MIN_PLAYERS;
+  const hasEnoughPlayers = mp.lobbyPlayers.length >= MIN_PLAYERS;
+  const canStart = hasEnoughPlayers;
   const bots = mp.lobbyPlayers.filter((p) => p.isBot);
 
   return (
@@ -511,11 +533,63 @@ export default function SalaPage({ params }: PageProps) {
                 + Adicionar bot
               </button>
             )}
+            {isHost && (
+              <button
+                onClick={() => setShowDeckEditor(true)}
+                className="h-11 rounded-[14px] border-2 border-ink/30 text-ink/65 hover:text-ink hover:border-ink font-bold text-[13px] transition-all active:scale-[0.98] flex items-center justify-between px-4"
+              >
+                <span>▣ Baralho</span>
+                <span className="text-[11px] text-red">
+                  {customCards.black.length + customCards.white.length > 0
+                    ? `${customCards.black.length + customCards.white.length} própria${customCards.black.length + customCards.white.length > 1 ? 's' : ''}`
+                    : 'personalizar'}
+                </span>
+              </button>
+            )}
           </div>
 
           <div className="mt-7 flex flex-col gap-3">
             {mp.role === 'host' && (
               <>
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between items-baseline px-1">
+                    <span className="text-ink/55 text-[11px] font-bold tracking-[2px]">MODO DE JOGO</span>
+                    <span className="text-ink/45 text-xs font-medium">
+                      {gameMode === 'judge' ? 'clássico' : 'todo mundo decide'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setGameMode('judge')}
+                      className={`min-h-20 rounded-xl border-2 p-3 text-left transition-all ${
+                        gameMode === 'judge'
+                          ? 'border-ink bg-ink text-paper'
+                          : 'border-ink/20 bg-white text-ink hover:border-ink/50'
+                      }`}
+                    >
+                      <span className="block font-display text-[14px]">⚖ 1 JUIZ</span>
+                      <span className={`mt-1 block text-[10.5px] font-medium leading-snug ${gameMode === 'judge' ? 'text-paper/60' : 'text-ink/50'}`}>
+                        um não joga e escolhe a melhor
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGameMode('democracy')}
+                      className={`min-h-20 rounded-xl border-2 p-3 text-left transition-all ${
+                        gameMode === 'democracy'
+                          ? 'border-red bg-red text-white'
+                          : 'border-ink/20 bg-white text-ink hover:border-red/60'
+                      }`}
+                    >
+                      <span className="block font-display text-[14px]">🗳 DEMOCRACIA</span>
+                      <span className={`mt-1 block text-[10.5px] font-medium leading-snug ${gameMode === 'democracy' ? 'text-white/70' : 'text-ink/50'}`}>
+                        todos jogam e votam, menos na própria
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
                 <div className="flex flex-col gap-2">
                   <div className="flex justify-between items-baseline px-1">
                     <span className="text-ink/55 text-[11px] font-bold tracking-[2px]">JOGAR ATÉ</span>
@@ -540,7 +614,7 @@ export default function SalaPage({ params }: PageProps) {
                 </div>
 
                 <button
-                  onClick={() => mp.startGame(scoreLimit)}
+                  onClick={() => mp.startGame(scoreLimit, gameMode)}
                   disabled={!canStart}
                   className="btn-red h-13 rounded-xl font-display text-[15px] tracking-wide transition-all hover:brightness-110 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -549,7 +623,7 @@ export default function SalaPage({ params }: PageProps) {
                     : `FALTA${MIN_PLAYERS - mp.lobbyPlayers.length > 1 ? 'M' : ''} ${MIN_PLAYERS - mp.lobbyPlayers.length} PRA COMEÇAR`}
                 </button>
                 <p className="text-center text-ink/45 text-xs font-medium">
-                  {canStart
+                  {hasEnoughPlayers
                     ? 'pode começar agora ou esperar mais gente'
                     : 'compartilhe o código ou complete com bots — mínimo 3'}
                 </p>
@@ -571,6 +645,12 @@ export default function SalaPage({ params }: PageProps) {
           </div>
         </div>
       </div>
+      <CustomDeckEditor
+        open={showDeckEditor && isHost}
+        cards={customCards}
+        onChange={(next) => setCustomCards(saveCustomCards(next))}
+        onClose={() => setShowDeckEditor(false)}
+      />
       {chatWidget}
     </>
   );

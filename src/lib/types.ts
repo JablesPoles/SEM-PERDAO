@@ -15,6 +15,8 @@ export interface Player {
   id: number;
   name: string;
   isHuman: boolean;
+  // O assento continua ativo durante uma queda; a mesa joga por ele até voltar.
+  connected: boolean;
   score: number;
   hand: WhiteCard[];
   eliminated: boolean;
@@ -27,6 +29,13 @@ export interface Submission {
   cards: WhiteCard[];
 }
 
+export type GameMode = 'judge' | 'democracy';
+
+export interface Vote {
+  voterId: number;
+  submissionIndex: number;
+}
+
 export type GamePhase =
   | 'setup'
   | 'submitting'
@@ -36,18 +45,29 @@ export type GamePhase =
 
 export interface GameState {
   phase: GamePhase;
+  mode: GameMode;
   players: Player[];
   round: number;
   scoreLimit: number;
   czarId: number;
   blackCard: BlackCard | null;
   submissions: Submission[];
+  // No modo Democracia, o voto fica secreto durante a votação e só é aberto
+  // no resultado. `votingOptions` limita as cartas num eventual 2º turno.
+  votes: Vote[];
+  votingOptions: number[];
+  votingRound: 1 | 2;
+  tieBreak: boolean;
   // Índices (em `submissions`) já virados pelo juiz durante o julgamento.
   revealed: number[];
   // Relógio do host no início da fase — base do timer nos clientes.
   phaseStartedAt: number;
   roundWinnerId: number | null;
   winner: Player | null;
+  // Baralhos-fonte dos reshuffles — só o host conhece; incluem as cartas
+  // personalizadas escolhidas ao abrir a partida.
+  blackPool: BlackCard[];
+  whitePool: WhiteCard[];
   // Pilhas de compra — só o host conhece; redigidas para os convidados.
   blackDeck: BlackCard[];
   whiteDeck: WhiteCard[];
@@ -57,6 +77,7 @@ export type PlayerAction =
   | { type: 'submit'; cardIds: string[] }
   | { type: 'reveal'; index: number }
   | { type: 'judge'; index: number }
+  | { type: 'vote'; index: number; phaseStartedAt: number }
   | { type: 'next_round' };
 
 // Reação-relâmpago que flutua na tela de todo mundo (efêmera, fora do estado).
@@ -64,6 +85,8 @@ export interface Reaction {
   id: string;
   emoji: string;
   name: string;
+  // Opcional para aceitar reações de clientes de uma versão anterior.
+  playerId?: number;
   ts: number;
 }
 

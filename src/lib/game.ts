@@ -1,5 +1,6 @@
 import { ALL_BLACK, ALL_WHITE } from './cards';
-import { BlackCard, GameState, Player, Submission, WhiteCard } from './types';
+import { sanitizeCustomCards } from './customCards';
+import { BlackCard, GameMode, GameState, Player, WhiteCard } from './types';
 
 export const HAND_SIZE = 10;
 export const MIN_PLAYERS = 3;
@@ -22,16 +23,46 @@ export function getActivePlayers(players: Player[]): Player[] {
   return players.filter((p) => !p.eliminated);
 }
 
+// Snapshots anteriores ao modo Democracia não têm `mode` em runtime.
+export function getGameMode(gs: GameState): GameMode {
+  return gs.mode ?? 'judge';
+}
+
 // Quem ainda precisa jogar carta branca nesta rodada.
 export function pendingSubmitters(gs: GameState): Player[] {
+  const democracy = getGameMode(gs) === 'democracy';
   return getActivePlayers(gs.players).filter(
-    (p) => p.id !== gs.czarId && !gs.submissions.some((s) => s.playerId === p.id)
+    (p) => (democracy || p.id !== gs.czarId) && !gs.submissions.some((s) => s.playerId === p.id)
   );
+}
+
+export function votingChoicesFor(gs: GameState, voterId: number): number[] {
+  if (getGameMode(gs) !== 'democracy' || gs.phase !== 'judging') return [];
+  const options = gs.votingOptions?.length
+    ? gs.votingOptions
+    : gs.submissions.map((_, index) => index);
+  return options.filter((index) => {
+    const submission = gs.submissions[index];
+    return submission && submission.playerId !== voterId;
+  });
+}
+
+export function pendingVoters(gs: GameState): Player[] {
+  if (getGameMode(gs) !== 'democracy' || gs.phase !== 'judging') return [];
+  return getActivePlayers(gs.players).filter(
+    (player) =>
+      !gs.votes.some((vote) => vote.voterId === player.id) &&
+      votingChoicesFor(gs, player.id).length > 0
+  );
+}
+
+export function voteCountFor(gs: GameState, submissionIndex: number): number {
+  return gs.votes.filter((vote) => vote.submissionIndex === submissionIndex).length;
 }
 
 function drawBlack(gs: GameState): GameState {
   let deck = gs.blackDeck;
-  if (deck.length === 0) deck = shuffle(ALL_BLACK);
+  if (deck.length === 0) deck = shuffle(gs.blackPool);
   const [blackCard, ...rest] = deck;
   return { ...gs, blackCard, blackDeck: rest };
 }
@@ -47,7 +78,7 @@ function refillHands(gs: GameState): GameState {
   );
   if (deck.length < needed) {
     const inHands = new Set(players.flatMap((p) => p.hand.map((c) => c.id)));
-    deck = shuffle(ALL_WHITE.filter((c) => !inHands.has(c.id)));
+    deck = shuffle(gs.whitePool.filter((c) => !inHands.has(c.id)));
   }
   for (const p of players) {
     if (p.eliminated) continue;
@@ -65,38 +96,57 @@ export interface Seat {
   isHuman: boolean;
 }
 
-export function initGame(seats: Seat[], scoreLimit: number): GameState {
+export function initGame(
+  seats: Seat[],
+  scoreLimit: number,
+  mode: GameMode = 'judge',
+  customBlack: BlackCard[] = [],
+  customWhite: WhiteCard[] = []
+): GameState {
+  const custom = sanitizeCustomCards({ black: customBlack, white: customWhite });
+  const blackPool = [...ALL_BLACK, ...custom.black];
+  const whitePool = [...ALL_WHITE, ...custom.white];
   const players: Player[] = seats.map((s) => ({
     id: s.id,
     name: s.name,
     isHuman: s.isHuman,
+    connected: true,
     score: 0,
     hand: [],
     eliminated: false,
   }));
-  // O primeiro juiz é sorteado; depois roda na ordem da mesa.
-  const czarId = players[Math.floor(Math.random() * players.length)].id;
+  // O primeiro juiz é sorteado; na Democracia todo mundo joga e vota.
+  const czarId = mode === 'judge'
+    ? players[Math.floor(Math.random() * players.length)].id
+    : -1;
   const base: GameState = {
     phase: 'submitting',
+    mode,
     players,
     round: 1,
     scoreLimit,
     czarId,
     blackCard: null,
     submissions: [],
+    votes: [],
+    votingOptions: [],
+    votingRound: 1,
+    tieBreak: false,
     revealed: [],
     phaseStartedAt: Date.now(),
     roundWinnerId: null,
     winner: null,
-    blackDeck: shuffle(ALL_BLACK),
-    whiteDeck: shuffle(ALL_WHITE),
+    blackPool,
+    whitePool,
+    blackDeck: shuffle(blackPool),
+    whiteDeck: shuffle(whitePool),
   };
   return drawBlack(refillHands(base));
 }
 
 export function applySubmission(gs: GameState, playerId: number, cardIds: string[]): GameState {
   if (gs.phase !== 'submitting' || !gs.blackCard) return gs;
-  if (playerId === gs.czarId) return gs;
+  if (getGameMode(gs) === 'judge' && playerId === gs.czarId) return gs;
   const player = gs.players.find((p) => p.id === playerId && !p.eliminated);
   if (!player) return gs;
   if (gs.submissions.some((s) => s.playerId === playerId)) return gs;
@@ -116,9 +166,7 @@ export function applySubmission(gs: GameState, playerId: number, cardIds: string
   const submissions = [...gs.submissions, { playerId, cards }];
   const next = { ...gs, players, submissions };
 
-  const waiting = getActivePlayers(players).filter(
-    (p) => p.id !== gs.czarId && !submissions.some((s) => s.playerId === p.id)
-  );
+  const waiting = pendingSubmitters(next);
   if (waiting.length === 0) return startJudging(next);
   return next;
 }
@@ -130,27 +178,30 @@ function startJudging(gs: GameState): GameState {
     // Todo mundo sumiu antes de jogar — pula a rodada.
     return advanceToNextRound(gs);
   }
+  const submissions = shuffle(gs.submissions);
+  const democracy = getGameMode(gs) === 'democracy';
   return {
     ...gs,
     phase: 'judging',
-    submissions: shuffle(gs.submissions),
-    revealed: [],
+    submissions,
+    votes: [],
+    votingOptions: democracy ? submissions.map((_, index) => index) : [],
+    votingRound: 1,
+    tieBreak: false,
+    revealed: democracy ? submissions.map((_, index) => index) : [],
     phaseStartedAt: Date.now(),
   };
 }
 
 // O juiz vira as provas uma a uma — o flip é sincronizado em todas as telas.
 export function applyReveal(gs: GameState, index: number): GameState {
-  if (gs.phase !== 'judging') return gs;
+  if (gs.phase !== 'judging' || getGameMode(gs) !== 'judge') return gs;
   if (!Number.isInteger(index) || index < 0 || index >= gs.submissions.length) return gs;
   if (gs.revealed.includes(index)) return gs;
   return { ...gs, revealed: [...gs.revealed, index] };
 }
 
-export function applyJudgePick(gs: GameState, index: number): GameState {
-  if (gs.phase !== 'judging') return gs;
-  // Sem julgamento sumário: só depois de virar todas as provas.
-  if (gs.revealed.length !== gs.submissions.length) return gs;
+function finishRound(gs: GameState, index: number, tieBreak = false): GameState {
   const winning = gs.submissions[index];
   if (!winning) return gs;
 
@@ -164,7 +215,50 @@ export function applyJudgePick(gs: GameState, index: number): GameState {
     roundWinnerId: winning.playerId,
     phase: winner ? 'game-end' : 'round-end',
     winner,
+    tieBreak,
   };
+}
+
+export function applyJudgePick(gs: GameState, index: number): GameState {
+  if (gs.phase !== 'judging' || getGameMode(gs) !== 'judge') return gs;
+  // Sem julgamento sumário: só depois de virar todas as provas.
+  if (gs.revealed.length !== gs.submissions.length) return gs;
+  return finishRound(gs, index);
+}
+
+export function applyVote(gs: GameState, voterId: number, index: number): GameState {
+  if (gs.phase !== 'judging' || getGameMode(gs) !== 'democracy') return gs;
+  if (!Number.isInteger(index)) return gs;
+  if (!getActivePlayers(gs.players).some((player) => player.id === voterId)) return gs;
+  if (gs.votes.some((vote) => vote.voterId === voterId)) return gs;
+  if (!votingChoicesFor(gs, voterId).includes(index)) return gs;
+
+  const voted: GameState = {
+    ...gs,
+    votes: [...gs.votes, { voterId, submissionIndex: index }],
+  };
+  if (pendingVoters(voted).length > 0) return voted;
+
+  const options = voted.votingOptions.length
+    ? voted.votingOptions
+    : voted.submissions.map((_, submissionIndex) => submissionIndex);
+  const highest = Math.max(...options.map((option) => voteCountFor(voted, option)));
+  const tied = options.filter((option) => voteCountFor(voted, option) === highest);
+
+  // Um empate abre um único 2º turno só entre as finalistas. Se empatar de
+  // novo, o sorteio impede que a partida fique presa para sempre.
+  if (tied.length > 1 && voted.votingRound === 1) {
+    return {
+      ...voted,
+      votes: [],
+      votingOptions: tied,
+      votingRound: 2,
+      phaseStartedAt: Date.now(),
+    };
+  }
+
+  const winningIndex = tied[Math.floor(Math.random() * tied.length)];
+  return finishRound(voted, winningIndex, tied.length > 1);
 }
 
 // Próximo jogador ativo na ordem da mesa, a partir de `fromId` (exclusivo).
@@ -179,12 +273,17 @@ export function nextActiveId(players: Player[], fromId: number): number {
 }
 
 export function advanceToNextRound(gs: GameState): GameState {
+  const mode = getGameMode(gs);
   const next: GameState = {
     ...gs,
     phase: 'submitting',
     round: gs.round + 1,
-    czarId: nextActiveId(gs.players, gs.czarId),
+    czarId: mode === 'judge' ? nextActiveId(gs.players, gs.czarId) : -1,
     submissions: [],
+    votes: [],
+    votingOptions: [],
+    votingRound: 1,
+    tieBreak: false,
     revealed: [],
     phaseStartedAt: Date.now(),
     roundWinnerId: null,
@@ -200,11 +299,20 @@ function returnSubmissions(gs: GameState): GameState {
     const cards = byPlayer.get(p.id);
     return cards && !p.eliminated ? { ...p, hand: [...p.hand, ...cards] } : p;
   });
-  return { ...gs, players, submissions: [], revealed: [], phaseStartedAt: Date.now() };
+  return {
+    ...gs,
+    players,
+    submissions: [],
+    votes: [],
+    votingOptions: [],
+    votingRound: 1,
+    revealed: [],
+    phaseStartedAt: Date.now(),
+  };
 }
 
 /**
- * Remove um jogador (kick ou queda) mantendo a rodada viável:
+ * Remove um jogador por kick mantendo a rodada viável:
  * - era juiz durante as jogadas → rodada reinicia com outro juiz e as cartas
  *   jogadas voltam às mãos;
  * - era juiz durante o julgamento → o próximo jogador ativo assume o martelo;
@@ -213,7 +321,8 @@ function returnSubmissions(gs: GameState): GameState {
 export function removePlayer(gs: GameState, playerId: number): GameState {
   if (!gs.players.some((p) => p.id === playerId && !p.eliminated)) return gs;
 
-  const wasCzar = gs.czarId === playerId;
+  const democracy = getGameMode(gs) === 'democracy';
+  const wasCzar = !democracy && gs.czarId === playerId;
   let next: GameState = gs;
 
   if (gs.phase === 'submitting' && wasCzar) {
@@ -231,7 +340,7 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
       .map((i) => (i > removedIdx ? i - 1 : i));
   }
   let players = next.players.map((p) =>
-    p.id === playerId ? { ...p, eliminated: true, hand: [] } : p
+    p.id === playerId ? { ...p, connected: false, eliminated: true, hand: [] } : p
   );
 
   const remaining = getActivePlayers(players);
@@ -256,10 +365,22 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
 
   next = { ...next, players, submissions, revealed, czarId };
 
+  // Kick durante a votação democrática reinicia a urna com os jogadores e
+  // cartas restantes. Assim nenhum índice ou voto antigo aponta pra outra carta.
+  if (democracy && next.phase === 'judging') {
+    next = {
+      ...next,
+      votes: [],
+      votingOptions: submissions.map((_, index) => index),
+      votingRound: 1,
+      tieBreak: false,
+      revealed: submissions.map((_, index) => index),
+      phaseStartedAt: Date.now(),
+    };
+  }
+
   if (next.phase === 'submitting') {
-    const waiting = getActivePlayers(players).filter(
-      (p) => p.id !== czarId && !submissions.some((s) => s.playerId === p.id)
-    );
+    const waiting = pendingSubmitters(next);
     if (waiting.length === 0) return startJudging(next);
   }
   if (next.phase === 'judging' && submissions.length === 0) {
@@ -276,6 +397,7 @@ export function seatNewcomers(gs: GameState, seats: { id: number; name: string }
       id: s.id,
       name: s.name,
       isHuman: true,
+      connected: true,
       score: 0,
       hand: [],
       eliminated: false,
