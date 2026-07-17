@@ -12,7 +12,7 @@
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Reu, EXPRESSOES } from './reus';
+import { Reu, EXPRESSOES, type Expressao, type Acao } from './reus';
 import { avatarColor } from '@/components/avatar';
 
 // Paleta "Brutal Minimal — Sem Perdão" (mesmos tokens do globals.css)
@@ -212,6 +212,10 @@ export class RetroMesa {
   private bulbo!: THREE.Mesh;
   private blinkAte = 0;
   private proximoCaos = 3;
+  private martelo!: THREE.Group;
+  private juizReu: Reu | null = null;
+  private marteloT = -1;
+  private shake = 0;
   private raf = 0;
   private pixelSize: number;
   private disposed = false;
@@ -409,6 +413,7 @@ export class RetroMesa {
       r.group.lookAt(0, 0, 0);
       this.scene.add(r.group);
       this.reus.push(r);
+      if (a.juiz) this.juizReu = r;
     });
 
     const martelo = new THREE.Group();
@@ -428,6 +433,24 @@ export class RetroMesa {
     martelo.position.set(0.7, 0.08, -3.4);
     martelo.rotation.y = 0.5;
     this.scene.add(martelo);
+    this.martelo = martelo;
+  }
+
+  // ── API de teste (painel "laboratório de caos" da página) ──────────────────
+
+  /** Todos os réus fazem a mesma cara — pra avaliar as expressões. */
+  testarExpressao(e: Expressao) {
+    for (const r of this.reus) r.setExpressao(e);
+  }
+
+  /** Todos os réus executam a ação ao mesmo tempo — visível de qualquer ângulo. */
+  testarAcao(a: Acao) {
+    for (const r of this.reus) r.acao(a);
+  }
+
+  /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake incluso. */
+  martelada() {
+    if (this.marteloT < 0) this.marteloT = 0;
   }
 
   private montarCartas(pretas: string[], brancas: string[]) {
@@ -560,16 +583,45 @@ export class RetroMesa {
     this.brilho.intensity = 7 * fator;
     (this.bulbo.material as THREE.MeshBasicMaterial).color.setHex(fator < 0.5 ? 0x55504a : 0xfff4e0);
 
-    // os réus vivem: respiração + caos aleatório (expressões e socos na mesa)
+    // os réus vivem: respiração + caos aleatório (expressões e ações)
     if (t > this.proximoCaos) {
       this.proximoCaos = t + 1.2 + Math.random() * 2.8;
       const vivos = this.reus.filter((r) => !r.manequim);
       const alvo = vivos[Math.floor(Math.random() * vivos.length)];
-      if (Math.random() < 0.45) alvo.baterNaMesa();
+      if (Math.random() < 0.45) {
+        const espontaneas: Acao[] = ['soco', 'rir', 'facepalm', 'apontar'];
+        alvo.acao(espontaneas[Math.floor(Math.random() * espontaneas.length)]);
+      }
       const exps = EXPRESSOES.filter((e) => e !== alvo.expressao);
       alvo.setExpressao(exps[Math.floor(Math.random() * exps.length)]);
     }
     for (const r of this.reus) r.tick(t, dt);
+
+    // martelada do juiz: ergue devagar, crava seco, a sala treme
+    if (this.marteloT >= 0) {
+      this.marteloT += dt / 0.55;
+      const k = Math.min(this.marteloT, 1);
+      let ang: number;
+      if (k < 0.45) {
+        const e = k / 0.45;
+        ang = -1.4 * e * (2 - e); // ergue desacelerando
+      } else if (k < 0.58) {
+        ang = -1.4 + 1.55 * ((k - 0.45) / 0.13); // CRAVA
+        if (this.shake === 0 && k > 0.55) {
+          this.shake = 0.22;
+          for (const r of this.reus) r.setExpressao('choque');
+          this.juizReu?.acao('soco');
+        }
+      } else {
+        ang = 0.15 * (1 - (k - 0.58) / 0.42);
+      }
+      this.martelo.rotation.z = ang;
+      if (k >= 1) {
+        this.marteloT = -1;
+        this.martelo.rotation.z = 0;
+        this.shake = 0;
+      }
+    }
 
     // animações de entrada
     for (const c of this.cartas) {
@@ -592,6 +644,13 @@ export class RetroMesa {
     const sob = this.provaSobOPonteiro();
     for (const p of this.provas) p.hover = p === sob;
     this.canvas.style.cursor = sob ? 'pointer' : 'grab';
+
+    // screen shake do veredito — 1 frame de violência, decai rápido
+    if (this.shake > 0.003) {
+      this.camera.position.x += (Math.random() - 0.5) * this.shake;
+      this.camera.position.y += (Math.random() - 0.5) * this.shake;
+      this.shake *= Math.exp(-dt * 9);
+    }
 
     // 1º passe: cena → render target pequeno
     this.renderer.setRenderTarget(this.rt);

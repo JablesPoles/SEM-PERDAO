@@ -7,8 +7,18 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ALL_BLACK, ALL_WHITE } from '@/lib/cards';
 import type { RetroMesa } from '@/lib/three/retroMesa';
+import { EXPRESSOES, ACOES, type Expressao, type Acao } from '@/lib/three/reus';
 
 const PIXELS = [1, 2, 3];
+
+const ROTULO_ACAO: Record<Acao, string> = {
+  soco: 'SOCO NA MESA',
+  apontar: 'APONTAR',
+  aplaudir: 'APLAUDIR',
+  festejar: 'FESTEJAR',
+  facepalm: 'FACEPALM',
+  rir: 'RIR',
+};
 
 function sortear<T>(arr: T[], n: number): T[] {
   const copia = [...arr];
@@ -99,10 +109,46 @@ export default function Mesa3D() {
         </div>
       </div>
 
+      {/* laboratório de caos: dispara animações pra avaliar */}
+      <div className="absolute bottom-0 left-0 p-4 sm:p-6 pointer-events-auto max-w-[300px]">
+        <p className="text-paper/50 text-[10px] font-bold tracking-widest uppercase mb-2">
+          laboratório de caos
+        </p>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {EXPRESSOES.map((e: Expressao) => (
+            <button
+              key={e}
+              onClick={() => cenaRef.current?.testarExpressao(e)}
+              className="h-8 px-2.5 rounded-lg bg-white/5 text-paper/80 border border-white/15 hover:bg-white/15 active:scale-90 font-bold text-[10px] tracking-wider uppercase transition-all"
+            >
+              {e}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {ACOES.map((a: Acao) => (
+            <button
+              key={a}
+              onClick={() => cenaRef.current?.testarAcao(a)}
+              className="h-8 px-2.5 rounded-lg bg-white/5 text-paper/80 border border-white/15 hover:bg-white/15 active:scale-90 font-bold text-[10px] tracking-wider uppercase transition-all"
+            >
+              {ROTULO_ACAO[a]}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => cenaRef.current?.martelada()}
+          className="btn-red h-10 px-4 rounded-lg font-display text-[13px] tracking-wide active:scale-95 transition-all"
+        >
+          MARTELADA ⚖
+        </button>
+      </div>
+
       {/* rodapé */}
-      <div className="absolute bottom-0 inset-x-0 p-4 sm:p-6 flex justify-center pointer-events-none">
-        <p className="text-paper/45 text-[11.5px] font-medium tracking-wide text-center">
-          arrasta pra orbitar · rolagem aproxima · <span className="text-red font-bold">clique nas provas lacradas</span> pra revelar
+      <div className="absolute bottom-0 right-0 p-4 sm:p-6 flex justify-end pointer-events-none max-w-[45%]">
+        <p className="text-paper/45 text-[11.5px] font-medium tracking-wide text-right">
+          arrasta pra orbitar · rolagem aproxima ·{' '}
+          <span className="text-red font-bold">clique nas provas lacradas</span> pra revelar
         </p>
       </div>
 
