@@ -14,6 +14,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Reu, EXPRESSOES, type Expressao, type Acao } from './reus';
 import { avatarColor } from '@/components/avatar';
+import { somMartelada, somCarta, somZap } from './sons3d';
 
 // Paleta "Brutal Minimal — Sem Perdão" (mesmos tokens do globals.css)
 const COR = {
@@ -282,26 +283,48 @@ export class RetroMesa {
         uniform float uTime;
         varying vec2 vUv;
         void main() {
-          vec3 c = texture2D(tDiffuse, vUv).rgb;
+          // ── vidro do tubo: curvatura de barril ──
+          vec2 d = vUv - 0.5;
+          float r2 = dot(d, d);
+          vec2 uv = 0.5 + d * (1.0 + 0.16 * r2);
+          if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+          }
+          // aberração cromática crescendo pra borda
+          vec2 ca = d * r2 * 0.06;
+          vec3 c;
+          c.r = texture2D(tDiffuse, uv + ca).r;
+          c.g = texture2D(tDiffuse, uv).g;
+          c.b = texture2D(tDiffuse, uv - ca).b;
           // dithering ordenado (Bayer 4x4 por pixelão) + posterização de cor
           float limiar = texture2D(tBayer, gl_FragCoord.xy / (4.0 * uPixel)).r - 0.5;
           c += limiar * (uDither / uLevels);
           c = floor(c * uLevels + 0.5) / uLevels;
-          // ── filtro de TV velha ──
           // fósforo nunca apaga: levanta os pretos (o escuro fica VISÍVEL)
           c = c * 0.95 + vec3(0.045);
+          // máscara RGB sutil (grade de fósforo) por coluna de pixelão
+          float m = mod(floor(gl_FragCoord.x / uPixel), 3.0);
+          c *= vec3(0.96) + 0.08 * vec3(
+            m == 0.0 ? 1.0 : 0.0,
+            m == 1.0 ? 1.0 : 0.0,
+            m == 2.0 ? 1.0 : 0.0
+          );
           // scanlines alinhadas ao pixelão
           float linha = mod(floor(gl_FragCoord.y / uPixel), 2.0);
           c *= 1.0 - 0.1 * linha;
           // vinheta pesada nos cantos — o sinistro mora na borda
-          vec2 d = vUv - 0.5;
           float vig = smoothstep(0.85, 0.3, length(d) * 1.25);
           c *= 0.55 + 0.45 * vig;
           // grão animado
           float g = fract(sin(dot(gl_FragCoord.xy + mod(uTime, 10.0) * 137.0, vec2(12.9898, 78.233))) * 43758.5453);
           c += (g - 0.5) * 0.05;
-          // faixa de brilho rolando devagar, tipo sinal mal sintonizado
-          c *= 1.0 + 0.035 * sin(vUv.y * 9.42 - uTime * 1.1);
+          // faixa rolando + tremidinha de sinal fraco
+          c *= 1.0 + 0.035 * sin(uv.y * 9.42 - uTime * 1.1);
+          c *= 1.0 + 0.015 * sin(uTime * 84.0);
+          // cantos arredondados do vidro
+          vec2 q = abs(d) * 2.0;
+          c *= smoothstep(1.03, 0.95, max(q.x, q.y) + 0.14 * min(q.x, q.y));
           gl_FragColor = vec4(c, 1.0);
         }
       `,
@@ -329,6 +352,30 @@ export class RetroMesa {
     return tex;
   }
 
+  /** Textura de ruído grayscale (feltro/concreto) — o `color` do material tinge. */
+  private texRuido(base: string, forca: number, repetir: number): THREE.CanvasTexture {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const x = c.getContext('2d')!;
+    x.fillStyle = base;
+    x.fillRect(0, 0, 128, 128);
+    for (let i = 0; i < 2600; i++) {
+      const a = (Math.random() * forca).toFixed(3);
+      x.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${a})` : `rgba(255,255,255,${a})`;
+      x.fillRect(Math.floor(Math.random() * 128), Math.floor(Math.random() * 128), 1, 1);
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(repetir, repetir);
+    t.magFilter = THREE.NearestFilter;
+    t.minFilter = THREE.NearestFilter;
+    t.generateMipmaps = false;
+    this.texturas.push(t);
+    return t;
+  }
+
   private montarCenario() {
     // Tribunal do Porão v2: cena VISÍVEL — o clima sinistro vem do filtro de
     // TV (scanlines/vinheta/grão no shader) e da lâmpada, não da escuridão.
@@ -340,7 +387,7 @@ export class RetroMesa {
     // mesa: cilindro baixo e largo, com friso vermelho na borda
     const tampo = new THREE.Mesh(
       new THREE.CylinderGeometry(4.4, 4.4, 0.5, 24),
-      new THREE.MeshLambertMaterial({ color: COR.mesa })
+      new THREE.MeshLambertMaterial({ color: COR.mesa, map: this.texRuido('#cfcfcf', 0.13, 5) })
     );
     tampo.position.y = -0.26;
     tampo.receiveShadow = true;
@@ -357,7 +404,7 @@ export class RetroMesa {
     pe.position.y = -1.7;
     const chao = new THREE.Mesh(
       new THREE.CircleGeometry(24, 32),
-      new THREE.MeshLambertMaterial({ color: 0x1c1b21 })
+      new THREE.MeshLambertMaterial({ color: 0x1c1b21, map: this.texRuido('#c8c8c8', 0.18, 16) })
     );
     chao.rotation.x = -Math.PI / 2;
     chao.position.y = -2.9;
@@ -552,7 +599,10 @@ export class RetroMesa {
 
   private onClick = () => {
     const hit = this.provaSobOPonteiro();
-    if (hit) hit.flip();
+    if (hit) {
+      hit.flip();
+      somCarta();
+    }
   };
 
   private provaSobOPonteiro(): Carta | null {
@@ -596,7 +646,10 @@ export class RetroMesa {
     this.pendulo.rotation.z = Math.sin(t * 0.9) * 0.05;
     this.pendulo.rotation.x = Math.sin(t * 0.63 + 1.7) * 0.035;
     let fator = 0.94 + 0.06 * Math.sin(t * 31) * Math.sin(t * 17.3);
-    if (t > this.blinkAte && Math.random() < 0.002) this.blinkAte = t + 0.07 + Math.random() * 0.12;
+    if (t > this.blinkAte && Math.random() < 0.002) {
+      this.blinkAte = t + 0.07 + Math.random() * 0.12;
+      somZap();
+    }
     if (t < this.blinkAte) fator = 0.12;
     this.spot.intensity = 170 * fator;
     this.brilho.intensity = 8 * fator;
@@ -628,6 +681,7 @@ export class RetroMesa {
         ang = -1.4 + 1.55 * ((k - 0.45) / 0.13); // CRAVA
         if (this.shake === 0 && k > 0.55) {
           this.shake = 0.22;
+          somMartelada();
           for (const r of this.reus) r.setExpressao('choque');
           this.juizReu?.acao('soco');
         }

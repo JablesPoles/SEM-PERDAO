@@ -11,6 +11,7 @@
  *   - ações exageradas: antecipação, tremor, cabeça pra trás — nada tímido
  */
 import * as THREE from 'three';
+import { somSoco, somPalmas, somFesta, somRisada } from './sons3d';
 
 export type Expressao = 'neutro' | 'riso' | 'choque' | 'desprezo' | 'sono';
 export const EXPRESSOES: Expressao[] = ['neutro', 'riso', 'choque', 'desprezo', 'sono'];
@@ -44,6 +45,43 @@ function fontDisplay(): string {
   if (typeof document === 'undefined') return 'sans-serif';
   const v = getComputedStyle(document.documentElement).getPropertyValue('--font-archivo-black').trim();
   return v || 'sans-serif';
+}
+
+/**
+ * Textura de tecido (compartilhada): dobras verticais onduladas + fibra.
+ * Grayscale claro — o `color` do material tinge na cor do avatar.
+ */
+let tecidoCache: THREE.CanvasTexture | null = null;
+function texTecido(): THREE.CanvasTexture {
+  if (tecidoCache) return tecidoCache;
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const x = c.getContext('2d')!;
+  x.fillStyle = '#cfcfcf';
+  x.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 14; i++) {
+    const cx = (i / 14) * 128 + Math.random() * 6;
+    x.strokeStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.16)' : 'rgba(255,255,255,0.12)';
+    x.lineWidth = 3 + Math.random() * 6;
+    x.beginPath();
+    x.moveTo(cx, -4);
+    for (let yy = 0; yy <= 132; yy += 16) x.lineTo(cx + Math.sin(yy * 0.08 + i) * 5, yy);
+    x.stroke();
+  }
+  for (let i = 0; i < 900; i++) {
+    x.fillStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.10)' : 'rgba(255,255,255,0.08)';
+    x.fillRect(Math.floor(Math.random() * 128), Math.floor(Math.random() * 128), 1, 1);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(3, 2);
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  tecidoCache = t;
+  return t;
 }
 
 /** Envelope sobe-segura-volta: 0→1 até `sobe`, 1 até `volta`, 1→0 no fim. */
@@ -162,7 +200,7 @@ export class Reu {
   constructor(nome: string, cor: string, opts: ReuOpts = {}) {
     this.manequim = !!opts.manequim;
     const corTunica = new THREE.Color(this.manequim ? '#4a4855' : cor);
-    const matTunica = new THREE.MeshLambertMaterial({ color: corTunica });
+    const matTunica = new THREE.MeshLambertMaterial({ color: corTunica, map: texTecido() });
 
     // túnica drapeada: perfil curvo (bainha larga, cintura, ombros caídos)
     const perfil = [
@@ -191,27 +229,19 @@ export class Reu {
     const capuzGrp = new THREE.Group();
     const capuz = new THREE.Mesh(
       new THREE.SphereGeometry(0.42, 20, 14, 0, Math.PI * 1.55),
-      new THREE.MeshLambertMaterial({ color: corTunica, side: THREE.DoubleSide })
+      new THREE.MeshLambertMaterial({ color: corTunica, map: texTecido(), side: THREE.DoubleSide })
     );
     capuz.rotation.y = Math.PI / 2 + (Math.PI * 0.45) / 2; // abertura centrada em +z
     capuz.castShadow = true;
-    // o vazio: esfera preta fosca preenchendo o interior
+    // o vazio: esfera preta fosca preenchendo o interior — o rosto mora NELA
     const vazio = new THREE.Mesh(
-      new THREE.SphereGeometry(0.33, 12, 10),
+      new THREE.SphereGeometry(0.36, 12, 10),
       new THREE.MeshBasicMaterial({ color: 0x0a090c })
     );
-    vazio.position.z = -0.04;
+    vazio.position.z = -0.02;
     capuzGrp.add(capuz, vazio);
-    capuzGrp.position.y = ALTURA_ROSTO + 0.08;
-    capuzGrp.rotation.x = 0.12; // debruçado sobre a mesa
-    if (opts.juiz) {
-      capuzGrp.scale.setScalar(1.18);
-      capuzGrp.position.y += 0.08;
-    }
 
-    this.corpo.add(tunica, corda, pingente, capuzGrp);
-
-    // carinha luminosa (manequim não tem — capuz vazio)
+    // carinha luminosa DENTRO do capuz — acompanha inclinação e escala dele
     if (!this.manequim) {
       const corRosto = opts.juiz ? '#ff3b2f' : CREME;
       for (const e of EXPRESSOES) {
@@ -220,17 +250,25 @@ export class Reu {
         this.texturas.push(t);
       }
       this.rostoMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.42, 0.32),
+        new THREE.PlaneGeometry(0.38, 0.29),
         new THREE.MeshBasicMaterial({
           map: this.rostoTex.neutro,
           transparent: true,
           depthWrite: false,
         })
       );
-      this.rostoMesh.position.set(0, ALTURA_ROSTO, 0.4);
-      this.rostoMesh.rotation.x = -0.08;
-      this.corpo.add(this.rostoMesh);
+      this.rostoMesh.position.set(0, -0.03, 0.35);
+      capuzGrp.add(this.rostoMesh);
     }
+
+    capuzGrp.position.y = ALTURA_ROSTO + 0.08;
+    capuzGrp.rotation.x = 0.12; // debruçado sobre a mesa
+    if (opts.juiz) {
+      capuzGrp.scale.setScalar(1.18);
+      capuzGrp.position.y += 0.08;
+    }
+
+    this.corpo.add(tunica, corda, pingente, capuzGrp);
 
     // crachá torto preso na túnica — a seita bate ponto
     const tc = drawCracha(nome);
@@ -310,6 +348,11 @@ export class Reu {
     if (tipo === 'rir' || tipo === 'festejar') this.setExpressao('riso');
     if (tipo === 'facepalm') this.setExpressao('desprezo');
     if (tipo === 'soco') this.setExpressao('desprezo');
+    // trilha sonora do caos (facepalm e apontar são mudos — o silêncio é a piada)
+    if (tipo === 'soco') somSoco();
+    if (tipo === 'aplaudir') somPalmas(4);
+    if (tipo === 'festejar') somFesta();
+    if (tipo === 'rir') somRisada();
   }
 
   /** Compat: soco seco na mesa. */
