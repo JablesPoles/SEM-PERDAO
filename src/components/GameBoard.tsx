@@ -334,9 +334,9 @@ function PlayerRail({
   return (
     <aside
       aria-label="Jogadores da mesa"
-      className="sticky top-0 self-start h-[calc(100vh-48px)] w-[58px] sm:w-[190px] shrink-0 z-30 flex items-center px-2 sm:px-3 pointer-events-none"
+      className="fixed left-0 top-12 bottom-16 w-[46px] lg:w-[180px] z-30 flex items-center px-1 lg:px-3 pointer-events-none"
     >
-      <div className="w-full flex flex-col gap-1.5">
+      <div className="w-full max-h-full flex flex-col gap-1.5">
         {players.map((player) => {
           const democracy = getGameMode(gs) === 'democracy';
           const isCzar = !democracy && player.id === gs.czarId;
@@ -349,7 +349,7 @@ function PlayerRail({
             <div
               key={player.id}
               className={[
-                'relative h-10 sm:h-11 rounded-xl border flex items-center gap-2 px-1 sm:px-1.5 transition-colors',
+                'relative h-10 lg:h-11 rounded-xl border flex items-center gap-2 px-1 lg:px-1.5 transition-colors',
                 isOffline
                   ? 'border-white/8 bg-white/[0.02] opacity-55'
                   : isCzar
@@ -379,12 +379,12 @@ function PlayerRail({
                     ✓
                   </span>
                 )}
-                <span className="sm:hidden absolute -bottom-1 -left-1 min-w-4 h-4 px-1 rounded-full bg-ink border border-white/20 text-paper text-[8px] font-black flex items-center justify-center">
+                <span className="lg:hidden absolute -bottom-1 -left-1 min-w-4 h-4 px-1 rounded-full bg-ink border border-white/20 text-paper text-[8px] font-black flex items-center justify-center">
                   {player.score}
                 </span>
               </div>
 
-              <div className="hidden sm:flex min-w-0 flex-1 items-center gap-1.5">
+              <div className="hidden lg:flex min-w-0 flex-1 items-center gap-1.5">
                 <div className="min-w-0 flex-1 flex flex-col">
                   <span className={`truncate text-[11px] font-bold leading-tight ${player.id === myId ? 'text-paper' : 'text-paper/70'}`}>
                     {player.name}
@@ -412,7 +412,7 @@ function PlayerRail({
                   className="player-speech absolute left-[calc(100%+8px)] top-1/2 -translate-y-1/2 z-40 w-max max-w-[min(220px,calc(100vw-78px))] rounded-xl bg-paper text-ink px-3 py-2 shadow-xl"
                 >
                   <span className="absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 bg-paper rotate-45" />
-                  <span className="relative block text-[11.5px] sm:text-xs font-bold leading-snug line-clamp-2 break-words">
+                  <span className="relative block text-[11.5px] lg:text-xs font-bold leading-snug line-clamp-2 break-words">
                     {message.text}
                   </span>
                 </div>
@@ -449,7 +449,7 @@ function ReactionBar({ onReact }: { onReact: (emoji: string) => void }) {
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex gap-0.5 bg-[#100f13]/90 border border-white/10 rounded-full px-1.5 py-1 backdrop-blur-md shadow-xl">
       {expanded && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 grid grid-cols-6 gap-1 rounded-2xl border border-white/12 bg-[#100f13]/95 p-2 shadow-2xl backdrop-blur-md">
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 grid grid-cols-4 sm:grid-cols-6 gap-1 rounded-2xl border border-white/12 bg-[#100f13]/95 p-2 shadow-2xl backdrop-blur-md">
           {REACTION_EMOJIS.map(({ emoji, label }) => (
             <button
               key={emoji}
@@ -465,12 +465,12 @@ function ReactionBar({ onReact }: { onReact: (emoji: string) => void }) {
         </div>
       )}
 
-      {QUICK_REACTIONS.map(({ emoji, label }) => (
+      {QUICK_REACTIONS.map(({ emoji, label }, index) => (
         <button
           key={emoji}
           type="button"
           onClick={(event) => fire(emoji, event.timeStamp)}
-          className="text-lg leading-none w-8 h-8 sm:w-9 sm:h-9 rounded-full hover:bg-white/10 active:scale-125 transition-all"
+          className={`text-lg leading-none w-8 h-8 sm:w-9 sm:h-9 rounded-full hover:bg-white/10 active:scale-125 transition-all ${index >= 3 ? 'hidden sm:block' : ''}`}
           title={label}
           aria-label={label}
         >
@@ -609,10 +609,9 @@ export function GameBoard({
   if (gs.phase === 'game-end') {
     const ranked = [...gs.players].sort((a, b) => b.score - a.score);
     return (
-      <div className="min-h-screen table-bg flex flex-col">
-        <div className="flex flex-1 min-w-0">
-          <PlayerRail gs={gs} myId={myId} reactions={reactions} messages={messages} />
-          <div className="flex-1 min-w-0 flex flex-col items-center justify-center p-6 pb-24 gap-6">
+      <div className="min-h-screen table-bg relative">
+        <PlayerRail gs={gs} myId={myId} reactions={reactions} messages={messages} />
+        <div className="min-h-screen flex flex-col items-center justify-center px-[46px] lg:px-[180px] xl:px-6 py-6 pb-24 gap-6">
             <div className="text-center flex flex-col items-center gap-3">
               <div className="stamp text-xl">VEREDITO FINAL</div>
               <h1 className="font-display text-paper text-5xl sm:text-6xl leading-none card-in">
@@ -647,7 +646,6 @@ export function GameBoard({
             >
               VOLTAR AO INÍCIO
             </button>
-          </div>
         </div>
         <ReactionBar onReact={onReact} />
       </div>
@@ -661,31 +659,32 @@ export function GameBoard({
     (gs.phase === 'judging' && (democracy ? eligibleToVote && !myVote : iAmCzar));
 
   return (
-    <div className="min-h-screen table-bg flex flex-col">
-      {/* Barra superior */}
-      <header className="flex items-center justify-between px-4 pt-4 pb-1 max-w-3xl w-full mx-auto">
-        <span className="font-display text-paper text-sm">
-          SEM PERDÃO<span className="text-red">*</span>
-        </span>
-        <span className="text-paper/50 text-[11px] font-bold tracking-[0.18em]">
-          <span className="sm:hidden">
-            {democracy ? '🗳 DEMO' : '⚖ JUIZ'} · R{gs.round}
-          </span>
-          <span className="hidden sm:inline">
-            {democracy ? '🗳 DEMOCRACIA' : '⚖ 1 JUIZ'} · RODADA {gs.round} · ATÉ {gs.scoreLimit}
-          </span>
-        </span>
-        <button
-          onClick={() => { const m = !muted; setMuted(m); setMutedState(m); }}
-          className="text-paper/50 hover:text-paper text-sm w-8 h-8 rounded-full border border-white/15 flex items-center justify-center transition-colors"
-          title={muted ? 'Ativar sons' : 'Silenciar'}
-        >
-          {muted ? '🔇' : '🔊'}
-        </button>
-      </header>
+    <div className="min-h-screen table-bg flex flex-col relative">
+      <PlayerRail gs={gs} myId={myId} reactions={reactions} messages={messages} />
 
-      <div className="flex flex-1 min-w-0">
-        <PlayerRail gs={gs} myId={myId} reactions={reactions} messages={messages} />
+      <div className="flex flex-1 min-w-0 flex-col px-[46px] lg:px-[180px] xl:px-0">
+        {/* Barra superior */}
+        <header className="flex items-center justify-between px-2 sm:px-4 pt-4 pb-1 max-w-3xl w-full mx-auto">
+          <span className="font-display text-paper text-sm">
+            SEM PERDÃO<span className="text-red">*</span>
+          </span>
+          <span className="text-paper/50 text-[11px] font-bold tracking-[0.18em]">
+            <span className="sm:hidden">
+              {democracy ? '🗳 DEMO' : '⚖ JUIZ'} · R{gs.round}
+            </span>
+            <span className="hidden sm:inline">
+              {democracy ? '🗳 DEMOCRACIA' : '⚖ 1 JUIZ'} · RODADA {gs.round} · ATÉ {gs.scoreLimit}
+            </span>
+          </span>
+          <button
+            onClick={() => { const m = !muted; setMuted(m); setMutedState(m); }}
+            className="text-paper/50 hover:text-paper text-sm w-8 h-8 rounded-full border border-white/15 flex items-center justify-center transition-colors"
+            title={muted ? 'Ativar sons' : 'Silenciar'}
+          >
+            {muted ? '🔇' : '🔊'}
+          </button>
+        </header>
+
         <div className="flex-1 min-w-0 flex flex-col">
           {showTimer && (
             <PhaseTimer

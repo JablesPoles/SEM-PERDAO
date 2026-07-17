@@ -393,7 +393,7 @@ export default function SalaPage({ params }: PageProps) {
             </div>
           )}
 
-          <div className="flex gap-2">
+          <div className="flex flex-col-reverse sm:flex-row gap-2">
             {isHost && (
               <button
                 onClick={() => setShowPlayers(v => !v)}
