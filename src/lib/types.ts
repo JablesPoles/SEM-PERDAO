@@ -42,6 +42,10 @@ export interface GameState {
   czarId: number;
   blackCard: BlackCard | null;
   submissions: Submission[];
+  // Índices (em `submissions`) já virados pelo juiz durante o julgamento.
+  revealed: number[];
+  // Relógio do host no início da fase — base do timer nos clientes.
+  phaseStartedAt: number;
   roundWinnerId: number | null;
   winner: Player | null;
   // Pilhas de compra — só o host conhece; redigidas para os convidados.
@@ -51,8 +55,17 @@ export interface GameState {
 
 export type PlayerAction =
   | { type: 'submit'; cardIds: string[] }
+  | { type: 'reveal'; index: number }
   | { type: 'judge'; index: number }
   | { type: 'next_round' };
+
+// Reação-relâmpago que flutua na tela de todo mundo (efêmera, fora do estado).
+export interface Reaction {
+  id: string;
+  emoji: string;
+  name: string;
+  ts: number;
+}
 
 export interface ChatMessage {
   id: string;

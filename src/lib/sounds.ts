@@ -5,6 +5,9 @@
 export type SoundName =
   | 'turn'      // rodada nova / sua vez de julgar
   | 'play'      // carta jogada
+  | 'flip'      // prova revelada no julgamento
+  | 'stamp'     // martelo/carimbo do veredito
+  | 'tick'      // reta final do relógio
   | 'roundWin'  // você levou a rodada
   | 'chat'      // mensagem de outra pessoa
   | 'victory'   // venceu a partida
@@ -40,6 +43,9 @@ type Note = [freq: number, at: number, dur: number, gain?: number, type?: Oscill
 const CUES: Record<SoundName, Note[]> = {
   turn:     [[587, 0, 0.12, 0.18], [880, 0.1, 0.16, 0.18]],
   play:     [[320, 0, 0.06, 0.12, 'triangle']],
+  flip:     [[520, 0, 0.05, 0.1, 'triangle'], [780, 0.05, 0.07, 0.1, 'triangle']],
+  stamp:    [[150, 0, 0.12, 0.25, 'square'], [90, 0.06, 0.2, 0.22, 'square']],
+  tick:     [[880, 0, 0.03, 0.07, 'square']],
   roundWin: [[659, 0, 0.1, 0.16], [988, 0.09, 0.18, 0.16]],
   chat:     [[740, 0, 0.08, 0.12, 'sine']],
   victory:  [[523, 0, 0.14, 0.2], [659, 0.13, 0.14, 0.2], [784, 0.26, 0.14, 0.2], [1047, 0.39, 0.3, 0.22]],

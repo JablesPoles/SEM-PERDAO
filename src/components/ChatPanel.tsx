@@ -73,6 +73,14 @@ export function ChatPanel({ messages, myPlayerId, onSend }: ChatPanelProps) {
           </p>
         )}
         {messages.map((msg) => {
+          // Mensagens da mesa (sistema) — centralizadas, sem balão.
+          if (msg.playerId === -99) {
+            return (
+              <div key={msg.id} className="text-center text-red/80 text-[11px] font-bold tracking-wide py-0.5">
+                {msg.text}
+              </div>
+            );
+          }
           const isMine = msg.playerId === myPlayerId;
           return (
             <div key={msg.id} className={`flex flex-col gap-0.5 ${isMine ? 'items-end' : 'items-start'}`}>

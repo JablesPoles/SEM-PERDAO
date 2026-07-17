@@ -1,5 +1,5 @@
 'use client';
-import { use, useEffect, useRef, useState } from 'react';
+import { use, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMultiplayer } from '../../../hooks/useMultiplayer';
 import { MIN_PLAYERS, DEFAULT_SCORE_LIMIT } from '../../../lib/game';
@@ -36,10 +36,11 @@ function ChatWidget({ messages, myPlayerId, onSend }: ChatWidgetProps) {
   useEffect(() => {
     const n = messages.length;
     if (n > prevCount.current) {
-      if (!open) setUnread((u) => u + (n - prevCount.current));
-      // Só apita mensagem dos outros, não a sua.
-      const last = messages[n - 1];
-      if (last && last.playerId !== myPlayerId) playSound('chat');
+      const fresh = messages.slice(prevCount.current);
+      // Sistema não conta como não-lida nem apita; só gente de verdade.
+      const humans = fresh.filter((m) => m.playerId !== -99);
+      if (!open) setUnread((u) => u + humans.length);
+      if (humans.some((m) => m.playerId !== myPlayerId)) playSound('chat');
     }
     prevCount.current = n;
   }, [messages.length, open, messages, myPlayerId]);
@@ -156,6 +157,37 @@ export default function SalaPage({ params }: PageProps) {
     if (mp.wasKicked) router.push('/');
   }, [mp.wasKicked, router]);
 
+  // Narração da mesa no chat: cada cliente gera as próprias mensagens de
+  // sistema a partir das transições de estado — sem broadcast extra.
+  const [sysMsgs, setSysMsgs] = useState<ChatMessage[]>([]);
+  const prevSnapRef = useRef<{ phase: string; round: number; czarId: number | null }>({
+    phase: '', round: 0, czarId: null,
+  });
+  useEffect(() => {
+    const gs = mp.gameState;
+    if (!gs) return;
+    const prev = prevSnapRef.current;
+    const nameOf = (id: number) => gs.players.find((p) => p.id === id)?.name ?? '?';
+    const push = (text: string) =>
+      setSysMsgs((m) => [...m, { id: `sys-${Date.now()}-${m.length}`, playerId: -99, name: 'mesa', text, ts: Date.now() }]);
+
+    if (gs.phase === 'submitting' && (prev.round !== gs.round || prev.czarId !== gs.czarId)) {
+      push(`⚖ ${nameOf(gs.czarId)} assumiu o martelo — rodada ${gs.round}`);
+    }
+    if (gs.phase === 'round-end' && prev.phase !== 'round-end' && gs.roundWinnerId !== null) {
+      push(`☠ ${nameOf(gs.roundWinnerId)} levou a rodada`);
+    }
+    if (gs.phase === 'game-end' && prev.phase !== 'game-end' && gs.winner) {
+      push(`🏁 ${gs.winner.name} venceu a partida`);
+    }
+    prevSnapRef.current = { phase: gs.phase, round: gs.round, czarId: gs.czarId };
+  }, [mp.gameState]);
+
+  const allMessages = useMemo(
+    () => [...mp.chatMessages, ...sysMsgs].sort((a, b) => a.ts - b.ts),
+    [mp.chatMessages, sysMsgs]
+  );
+
   if (!nameInput) {
     return (
       <JoinForm
@@ -236,7 +268,7 @@ export default function SalaPage({ params }: PageProps) {
 
   const chatWidget = (
     <ChatWidget
-      messages={mp.chatMessages}
+      messages={allMessages}
       myPlayerId={mp.myPlayerId}
       onSend={mp.sendChat}
     />
@@ -254,9 +286,12 @@ export default function SalaPage({ params }: PageProps) {
           state={mp.gameState}
           myId={mp.myPlayerId ?? 0}
           onSubmit={(cardIds) => mp.sendAction({ type: 'submit', cardIds })}
+          onReveal={(index) => mp.sendAction({ type: 'reveal', index })}
           onJudge={(index) => mp.sendAction({ type: 'judge', index })}
           onNextRound={() => mp.sendAction({ type: 'next_round' })}
           onRestart={() => { mp.disconnect(); router.push('/'); }}
+          reactions={mp.reactions}
+          onReact={mp.sendReaction}
         />
 
         {/* Host: alguém quer entrar no meio do jogo */}

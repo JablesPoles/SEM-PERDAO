@@ -84,6 +84,8 @@ export function initGame(seats: Seat[], scoreLimit: number): GameState {
     czarId,
     blackCard: null,
     submissions: [],
+    revealed: [],
+    phaseStartedAt: Date.now(),
     roundWinnerId: null,
     winner: null,
     blackDeck: shuffle(ALL_BLACK),
@@ -128,11 +130,27 @@ function startJudging(gs: GameState): GameState {
     // Todo mundo sumiu antes de jogar — pula a rodada.
     return advanceToNextRound(gs);
   }
-  return { ...gs, phase: 'judging', submissions: shuffle(gs.submissions) };
+  return {
+    ...gs,
+    phase: 'judging',
+    submissions: shuffle(gs.submissions),
+    revealed: [],
+    phaseStartedAt: Date.now(),
+  };
+}
+
+// O juiz vira as provas uma a uma — o flip é sincronizado em todas as telas.
+export function applyReveal(gs: GameState, index: number): GameState {
+  if (gs.phase !== 'judging') return gs;
+  if (!Number.isInteger(index) || index < 0 || index >= gs.submissions.length) return gs;
+  if (gs.revealed.includes(index)) return gs;
+  return { ...gs, revealed: [...gs.revealed, index] };
 }
 
 export function applyJudgePick(gs: GameState, index: number): GameState {
   if (gs.phase !== 'judging') return gs;
+  // Sem julgamento sumário: só depois de virar todas as provas.
+  if (gs.revealed.length !== gs.submissions.length) return gs;
   const winning = gs.submissions[index];
   if (!winning) return gs;
 
@@ -167,19 +185,22 @@ export function advanceToNextRound(gs: GameState): GameState {
     round: gs.round + 1,
     czarId: nextActiveId(gs.players, gs.czarId),
     submissions: [],
+    revealed: [],
+    phaseStartedAt: Date.now(),
     roundWinnerId: null,
   };
   return drawBlack(refillHands(next));
 }
 
-// Devolve as cartas jogadas às mãos dos donos (rodada abortada).
+// Devolve as cartas jogadas às mãos dos donos (rodada abortada e recomeçada,
+// então o relógio da fase também reinicia).
 function returnSubmissions(gs: GameState): GameState {
   const byPlayer = new Map(gs.submissions.map((s) => [s.playerId, s.cards]));
   const players = gs.players.map((p) => {
     const cards = byPlayer.get(p.id);
     return cards && !p.eliminated ? { ...p, hand: [...p.hand, ...cards] } : p;
   });
-  return { ...gs, players, submissions: [] };
+  return { ...gs, players, submissions: [], revealed: [], phaseStartedAt: Date.now() };
 }
 
 /**
@@ -199,7 +220,16 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
     next = returnSubmissions(next);
   }
 
+  // Tirar uma jogada da mesa desloca os índices — os flips já feitos
+  // acompanham, senão o juiz veria a prova errada aberta.
+  const removedIdx = next.submissions.findIndex((s) => s.playerId === playerId);
   let submissions = next.submissions.filter((s) => s.playerId !== playerId);
+  let revealed = next.revealed;
+  if (removedIdx >= 0) {
+    revealed = revealed
+      .filter((i) => i !== removedIdx)
+      .map((i) => (i > removedIdx ? i - 1 : i));
+  }
   let players = next.players.map((p) =>
     p.id === playerId ? { ...p, eliminated: true, hand: [] } : p
   );
@@ -224,7 +254,7 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
     }
   }
 
-  next = { ...next, players, submissions, czarId };
+  next = { ...next, players, submissions, revealed, czarId };
 
   if (next.phase === 'submitting') {
     const waiting = getActivePlayers(players).filter(

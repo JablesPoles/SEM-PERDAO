@@ -1,10 +1,11 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChatMessage, GameState, PlayerAction } from '../lib/types';
+import { ChatMessage, GameState, PlayerAction, Reaction } from '../lib/types';
 import { supabase } from '../lib/supabase';
 import {
   advanceToNextRound,
   applyJudgePick,
+  applyReveal,
   applySubmission,
   getActivePlayers,
   initGame,
@@ -49,6 +50,7 @@ interface UseMultiplayerReturn {
   wasKicked: boolean;
   disconnectedPlayer: DisconnectedPlayer | null;
   chatMessages: ChatMessage[];
+  reactions: Reaction[];
   pendingJoins: PendingJoin[];
   awaitingApproval: boolean;
   joinRejected: boolean;
@@ -58,6 +60,7 @@ interface UseMultiplayerReturn {
   becameHost: boolean;
   sendAction: (action: PlayerAction) => void;
   sendChat: (text: string) => void;
+  sendReaction: (emoji: string) => void;
   startGame: (scoreLimit: number) => void;
   addBot: () => void;
   removeBot: (botId: number) => void;
@@ -144,8 +147,17 @@ export function useMultiplayer(
       const meta = savedLobby
         ? (JSON.parse(savedLobby) as { lobby: LobbyPlayer[]; nextPlayerId: number })
         : null;
+      // Snapshot de versão antiga pode não ter os campos novos — completa.
+      const parsed = savedGame ? (JSON.parse(savedGame) as GameState) : null;
+      const game = parsed
+        ? {
+            ...parsed,
+            revealed: parsed.revealed ?? [],
+            phaseStartedAt: parsed.phaseStartedAt ?? Date.now(),
+          }
+        : null;
       return {
-        game: savedGame ? (JSON.parse(savedGame) as GameState) : null,
+        game,
         lobby: meta?.lobby ?? null,
         nextPlayerId: meta?.nextPlayerId ?? 1,
       };
@@ -163,6 +175,7 @@ export function useMultiplayer(
   const [wasKicked, setWasKicked] = useState(false);
   const [disconnectedPlayer, setDisconnectedPlayer] = useState<DisconnectedPlayer | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [reactions, setReactions] = useState<Reaction[]>([]);
   const [pendingJoins, setPendingJoins] = useState<PendingJoin[]>([]);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
   const [joinRejected, setJoinRejected] = useState(false);
@@ -269,6 +282,9 @@ export function useMultiplayer(
     if (action.type === 'submit') {
       if (gs.phase !== 'submitting') return;
       gs = applySubmission(gs, fromPlayerId, action.cardIds);
+    } else if (action.type === 'reveal') {
+      if (gs.phase !== 'judging' || gs.czarId !== fromPlayerId) return;
+      gs = applyReveal(gs, action.index);
     } else if (action.type === 'judge') {
       if (gs.phase !== 'judging' || gs.czarId !== fromPlayerId) return;
       if (!Number.isInteger(action.index)) return;
@@ -333,12 +349,45 @@ export function useMultiplayer(
     } else if (gs.phase === 'judging') {
       const czar = gs.players.find((p) => p.id === gs.czarId);
       if (!czar || czar.eliminated) return;
-      const delay = czar.isHuman ? JUDGE_SECONDS * 1000 : 2500;
-      botTimersRef.current.push(setTimeout(() => {
-        const cur = hostGameRef.current;
-        if (!cur || cur.phase !== 'judging' || cur.czarId !== czar.id) return;
-        applyHostAction({ type: 'judge', index: getBotJudgeIndex(cur.submissions.length) }, czar.id);
-      }, delay));
+
+      if (!czar.isHuman) {
+        // Juiz-bot faz o teatro completo: vira as provas uma a uma e só
+        // depois bate o martelo.
+        const unrevealed = gs.submissions
+          .map((_, i) => i)
+          .filter((i) => !gs.revealed.includes(i));
+        unrevealed.forEach((idx, k) => {
+          botTimersRef.current.push(setTimeout(() => {
+            const cur = hostGameRef.current;
+            if (!cur || cur.phase !== 'judging' || cur.czarId !== czar.id) return;
+            if (!cur.revealed.includes(idx)) applyHostAction({ type: 'reveal', index: idx }, czar.id);
+          }, 1100 + k * 1300));
+        });
+        const pickDelay = unrevealed.length === 0
+          ? 2000
+          : 1100 + unrevealed.length * 1300 + 1800;
+        botTimersRef.current.push(setTimeout(() => {
+          const cur = hostGameRef.current;
+          if (!cur || cur.phase !== 'judging' || cur.czarId !== czar.id) return;
+          if (cur.revealed.length !== cur.submissions.length) return;
+          applyHostAction({ type: 'judge', index: getBotJudgeIndex(cur.submissions.length) }, czar.id);
+        }, pickDelay));
+      } else {
+        // Juiz humano AFK: no estouro do relógio a mesa vira o que faltar e
+        // condena aleatório.
+        botTimersRef.current.push(setTimeout(() => {
+          const cur = hostGameRef.current;
+          if (!cur || cur.phase !== 'judging' || cur.czarId !== czar.id) return;
+          for (let i = 0; i < cur.submissions.length; i++) {
+            const now = hostGameRef.current;
+            if (!now || now.phase !== 'judging') return;
+            if (!now.revealed.includes(i)) applyHostAction({ type: 'reveal', index: i }, czar.id);
+          }
+          const fin = hostGameRef.current;
+          if (!fin || fin.phase !== 'judging' || fin.czarId !== czar.id) return;
+          applyHostAction({ type: 'judge', index: getBotJudgeIndex(fin.submissions.length) }, czar.id);
+        }, JUDGE_SECONDS * 1000));
+      }
     } else if (gs.phase === 'round-end') {
       // Ninguém precisa apertar nada: a rodada vira sozinha.
       botTimersRef.current.push(setTimeout(() => {
@@ -586,6 +635,10 @@ export function useMultiplayer(
         .on('broadcast', { event: 'chat' }, ({ payload }) => {
           setChatMessages((prev) => [...prev, payload as ChatMessage]);
         })
+        // ── Reações-relâmpago (efêmeras, fora do estado do jogo) ────────
+        .on('broadcast', { event: 'reaction' }, ({ payload }) => {
+          setReactions((prev) => [...prev.slice(-24), payload as Reaction]);
+        })
         // ── Kick / saída voluntária ─────────────────────────────────────
         .on('broadcast', { event: 'kicked' }, ({ payload }) => {
           if (isHostRef.current) return;
@@ -815,6 +868,17 @@ export function useMultiplayer(
     send('chat', msg as unknown as Record<string, unknown>);
   }, [playerName, send]);
 
+  const sendReaction = useCallback((emoji: string) => {
+    const r: Reaction = {
+      id: clientIdRef.current + Date.now() + Math.random().toString(36).slice(2, 6),
+      emoji,
+      name: playerName ?? '?',
+      ts: Date.now(),
+    };
+    setReactions((prev) => [...prev.slice(-24), r]);
+    send('reaction', r as unknown as Record<string, unknown>);
+  }, [playerName, send]);
+
   const sendAction = useCallback((action: PlayerAction) => {
     if (isHost) {
       applyHostAction(action, myPlayerIdRef.current ?? 0);
@@ -947,6 +1011,7 @@ export function useMultiplayer(
     wasKicked,
     disconnectedPlayer,
     chatMessages,
+    reactions,
     pendingJoins,
     awaitingApproval,
     joinRejected,
@@ -962,6 +1027,7 @@ export function useMultiplayer(
       !gameState.players.some((p) => p.id === myPlayerId),
     sendAction,
     sendChat,
+    sendReaction,
     startGame,
     addBot,
     removeBot,
