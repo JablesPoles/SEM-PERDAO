@@ -22,7 +22,7 @@ const COR = {
   paper: 0xf2efe9,
   card: 0xffffff,
   red: 0xff3b2f,
-  mesa: 0x2a2830,
+  mesa: 0x322f38,
 };
 
 const CARD_W = 0.82;
@@ -246,8 +246,8 @@ export class RetroMesa {
     this.controls.enablePan = false;
 
     // névoa fecha o vazio ao redor da mesa — o breu É o porão
-    this.scene.background = new THREE.Color(0x121116);
-    this.scene.fog = new THREE.Fog(0x121116, 12, 30);
+    this.scene.background = new THREE.Color(0x17161c);
+    this.scene.fog = new THREE.Fog(0x17161c, 14, 34);
 
     this.montarCenario();
     this.montarLampada();
@@ -266,6 +266,8 @@ export class RetroMesa {
         tBayer: { value: this.criarBayer() },
         uLevels: { value: 7.0 },
         uDither: { value: 0.9 },
+        uPixel: { value: this.pixelSize },
+        uTime: { value: 0 },
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -276,13 +278,30 @@ export class RetroMesa {
         uniform sampler2D tBayer;
         uniform float uLevels;
         uniform float uDither;
+        uniform float uPixel;
+        uniform float uTime;
         varying vec2 vUv;
         void main() {
           vec3 c = texture2D(tDiffuse, vUv).rgb;
-          // dithering ordenado (Bayer 4x4) + posterização de cor
-          float limiar = texture2D(tBayer, gl_FragCoord.xy / 4.0).r - 0.5;
+          // dithering ordenado (Bayer 4x4 por pixelão) + posterização de cor
+          float limiar = texture2D(tBayer, gl_FragCoord.xy / (4.0 * uPixel)).r - 0.5;
           c += limiar * (uDither / uLevels);
           c = floor(c * uLevels + 0.5) / uLevels;
+          // ── filtro de TV velha ──
+          // fósforo nunca apaga: levanta os pretos (o escuro fica VISÍVEL)
+          c = c * 0.95 + vec3(0.045);
+          // scanlines alinhadas ao pixelão
+          float linha = mod(floor(gl_FragCoord.y / uPixel), 2.0);
+          c *= 1.0 - 0.1 * linha;
+          // vinheta pesada nos cantos — o sinistro mora na borda
+          vec2 d = vUv - 0.5;
+          float vig = smoothstep(0.85, 0.3, length(d) * 1.25);
+          c *= 0.55 + 0.45 * vig;
+          // grão animado
+          float g = fract(sin(dot(gl_FragCoord.xy + mod(uTime, 10.0) * 137.0, vec2(12.9898, 78.233))) * 43758.5453);
+          c += (g - 0.5) * 0.05;
+          // faixa de brilho rolando devagar, tipo sinal mal sintonizado
+          c *= 1.0 + 0.035 * sin(vUv.y * 9.42 - uTime * 1.1);
           gl_FragColor = vec4(c, 1.0);
         }
       `,
@@ -311,13 +330,12 @@ export class RetroMesa {
   }
 
   private montarCenario() {
-    // Tribunal do Porão: quase-escuridão. A luz principal é a lâmpada pendurada
-    // (montarLampada); aqui só um ambiente mínimo pra silhueta existir e o
-    // recorte vermelho que vem "de lugar nenhum" — é o julgamento no ar.
-    const ambiente = new THREE.AmbientLight(0x55525e, 1.7);
-    const recorte = new THREE.DirectionalLight(COR.red, 1.1);
+    // Tribunal do Porão v2: cena VISÍVEL — o clima sinistro vem do filtro de
+    // TV (scanlines/vinheta/grão no shader) e da lâmpada, não da escuridão.
+    const hemi = new THREE.HemisphereLight(0xfff0dc, 0x4a4855, 1.5);
+    const recorte = new THREE.DirectionalLight(COR.red, 1.3);
     recorte.position.set(-6, 2.5, -6);
-    this.scene.add(ambiente, recorte);
+    this.scene.add(hemi, recorte);
 
     // mesa: cilindro baixo e largo, com friso vermelho na borda
     const tampo = new THREE.Mesh(
@@ -339,7 +357,7 @@ export class RetroMesa {
     pe.position.y = -1.7;
     const chao = new THREE.Mesh(
       new THREE.CircleGeometry(24, 32),
-      new THREE.MeshLambertMaterial({ color: 0x141318 })
+      new THREE.MeshLambertMaterial({ color: 0x1c1b21 })
     );
     chao.rotation.x = -Math.PI / 2;
     chao.position.y = -2.9;
@@ -382,13 +400,13 @@ export class RetroMesa {
     );
     this.bulbo.position.y = -4.42;
     // cone calculado pra molhar a mesa inteira E as cabeças dos réus (r=5.15)
-    this.spot = new THREE.SpotLight(0xfff4e0, 150, 0, 1.12, 0.5, 2);
+    this.spot = new THREE.SpotLight(0xfff4e0, 170, 0, 1.12, 0.5, 2);
     this.spot.position.y = -4.4;
     this.spot.castShadow = true;
     this.spot.shadow.mapSize.set(512, 512);
     this.spot.shadow.bias = -0.002;
     this.spot.target.position.set(0, -8.2, 0); // aponta reto pra baixo e acompanha o balanço
-    this.brilho = new THREE.PointLight(0xffe9c4, 7, 9, 2);
+    this.brilho = new THREE.PointLight(0xffe9c4, 8, 9, 2);
     this.brilho.position.y = -4.3;
     this.pendulo.add(fio, cupula, this.bulbo, this.spot, this.spot.target, this.brilho);
     this.scene.add(this.pendulo);
@@ -559,6 +577,7 @@ export class RetroMesa {
     const lw = Math.max(2, Math.floor(w / this.pixelSize));
     const lh = Math.max(2, Math.floor(h / this.pixelSize));
     this.rt.setSize(lw, lh);
+    if (this.blitMat) this.blitMat.uniforms.uPixel.value = this.pixelSize;
     this.camera.aspect = w / h;
     // em tela estreita (celular em pé) abre o FOV pra mesa inteira caber
     this.camera.fov = this.camera.aspect < 0.9 ? 66 : 50;
@@ -579,8 +598,8 @@ export class RetroMesa {
     let fator = 0.94 + 0.06 * Math.sin(t * 31) * Math.sin(t * 17.3);
     if (t > this.blinkAte && Math.random() < 0.002) this.blinkAte = t + 0.07 + Math.random() * 0.12;
     if (t < this.blinkAte) fator = 0.12;
-    this.spot.intensity = 150 * fator;
-    this.brilho.intensity = 7 * fator;
+    this.spot.intensity = 170 * fator;
+    this.brilho.intensity = 8 * fator;
     (this.bulbo.material as THREE.MeshBasicMaterial).color.setHex(fator < 0.5 ? 0x55504a : 0xfff4e0);
 
     // os réus vivem: respiração + caos aleatório (expressões e ações)
@@ -653,6 +672,7 @@ export class RetroMesa {
     }
 
     // 1º passe: cena → render target pequeno
+    this.blitMat.uniforms.uTime.value = t;
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
     // 2º passe: quad fullscreen com posterização + dithering

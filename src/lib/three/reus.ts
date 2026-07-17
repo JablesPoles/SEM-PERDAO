@@ -1,15 +1,14 @@
 /**
  * reus.ts — O Júri Encapuzado: avatares do Tribunal do Porão.
  *
- * Design v3 (feedback: capuz arredondado em vez de cone pontudo; rosto com
- * boca; mãos com forma de luva de verdade; sistema de ações animadas):
- *   - túnica low-poly + capuz-domo facetado na cor do avatar
- *   - rosto = vazio preto no capuz com OLHOS E BOCA brilhantes (MeshBasic,
- *     ignoram luz). A expressão inteira mora nessa carinha luminosa.
- *   - mãos-luva flutuantes (palma + polegar + punho na cor da túnica)
- *   - ações: soco, apontar, aplaudir, festejar, facepalm, rir — ≤1.4s,
- *     interrompíveis, computadas por envelope (sobe-segura-volta)
- *   - juiz: capuz maior e olhos vermelhos; manequim: capuz vazio, sem olhos
+ * Design v4 (feedback: menos low-poly/goofy, mais cultista de verdade):
+ *   - túnica drapeada (LatheGeometry com perfil curvo, sombreamento suave —
+ *     o filtro de pixel/TV é quem faz o retrô, não a malha)
+ *   - capuz de tecido: esfera parcial com abertura funda; dentro, o vazio
+ *     preto e a carinha luminosa (olhos + boca; juiz em vermelho)
+ *   - corda de seita na cintura com pingente
+ *   - luvas arredondadas com polegar e punho na cor da túnica
+ *   - ações exageradas: antecipação, tremor, cabeça pra trás — nada tímido
  */
 import * as THREE from 'three';
 
@@ -20,16 +19,17 @@ export type Acao = 'soco' | 'apontar' | 'aplaudir' | 'festejar' | 'facepalm' | '
 export const ACOES: Acao[] = ['soco', 'apontar', 'aplaudir', 'festejar', 'facepalm', 'rir'];
 
 const DURACAO: Record<Acao, number> = {
-  soco: 0.3,
-  apontar: 1.1,
-  aplaudir: 1.0,
-  festejar: 1.1,
-  facepalm: 1.4,
-  rir: 1.2,
+  soco: 0.35,
+  apontar: 1.2,
+  aplaudir: 1.1,
+  festejar: 1.2,
+  facepalm: 1.5,
+  rir: 1.3,
 };
 
 const INK = '#17161a';
 const CREME = '#f2efe9';
+const ALTURA_ROSTO = 1.5;
 
 function texCanvas(c: HTMLCanvasElement): THREE.CanvasTexture {
   const t = new THREE.CanvasTexture(c);
@@ -54,10 +54,7 @@ function pulso(k: number, sobe = 0.2, volta = 0.75): number {
   return 1;
 }
 
-/**
- * Carinha brilhante 64x48 — olhos E boca sobre fundo transparente.
- * É o que se lê a qualquer distância; o resto do rosto é breu.
- */
+/** Carinha brilhante 64x48 — olhos E boca sobre fundo transparente. */
 function drawRosto(exp: Expressao, cor: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 64;
@@ -71,30 +68,30 @@ function drawRosto(exp: Expressao, cor: string): THREE.CanvasTexture {
   switch (exp) {
     case 'neutro':
       olhos((cx) => x.fillRect(cx - 5, 8, 10, 10));
-      x.fillRect(24, 34, 16, 4); // boca reta
+      x.fillRect(24, 34, 16, 4);
       break;
     case 'riso':
       olhos((cx) => {
-        x.fillRect(cx - 6, 12, 4, 4); // ^^
+        x.fillRect(cx - 6, 12, 4, 4);
         x.fillRect(cx - 2, 8, 4, 4);
         x.fillRect(cx + 2, 12, 4, 4);
       });
-      x.fillRect(20, 30, 24, 8); // bocona aberta
+      x.fillRect(20, 30, 24, 8);
       x.fillRect(24, 38, 16, 4);
       break;
     case 'choque':
       olhos((cx) => x.fillRect(cx - 6, 4, 12, 16));
-      x.fillRect(26, 30, 12, 14); // queixo no chão
+      x.fillRect(26, 30, 12, 14);
       break;
     case 'desprezo':
       olhos((cx) => x.fillRect(cx - 7, 10, 14, 4));
-      x.fillRect(22, 38, 20, 4); // boca virada pra baixo
+      x.fillRect(22, 38, 20, 4);
       x.fillRect(20, 36, 4, 4);
       x.fillRect(40, 36, 4, 4);
       break;
     case 'sono':
       olhos((cx) => x.fillRect(cx - 6, 16, 12, 3));
-      x.fillRect(28, 34, 8, 6); // boquinha ressonando
+      x.fillRect(28, 34, 8, 6);
       break;
   }
   return texCanvas(c);
@@ -165,36 +162,56 @@ export class Reu {
   constructor(nome: string, cor: string, opts: ReuOpts = {}) {
     this.manequim = !!opts.manequim;
     const corTunica = new THREE.Color(this.manequim ? '#4a4855' : cor);
-    const matTunica = new THREE.MeshLambertMaterial({ color: corTunica, flatShading: true });
+    const matTunica = new THREE.MeshLambertMaterial({ color: corTunica });
 
-    // túnica: saia larga afunilando nos ombros
-    const tunica = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.78, 1.35, 7), matTunica);
-    tunica.position.y = 0.4;
+    // túnica drapeada: perfil curvo (bainha larga, cintura, ombros caídos)
+    const perfil = [
+      [0.02, 0.0],
+      [0.85, 0.02],
+      [0.8, 0.28],
+      [0.66, 0.62],
+      [0.54, 0.95],
+      [0.46, 1.2],
+      [0.38, 1.42],
+      [0.31, 1.56],
+      [0.17, 1.68],
+    ].map(([r, y]) => new THREE.Vector2(r, y));
+    const tunica = new THREE.Mesh(new THREE.LatheGeometry(perfil, 20), matTunica);
     tunica.castShadow = true;
 
-    // capuz-domo facetado (juiz = maior, hierarquia por silhueta)
-    const escalaCapuz = opts.juiz ? 1.2 : 1.0;
-    const capuz = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 1), matTunica);
-    capuz.scale.set(escalaCapuz, 1.12 * escalaCapuz, 1.02 * escalaCapuz);
-    capuz.position.y = 1.34 + (opts.juiz ? 0.06 : 0);
-    capuz.rotation.x = 0.1; // debruçado sobre a mesa
+    // corda de seita na cintura + pingente caído
+    const matCorda = new THREE.MeshLambertMaterial({ color: 0xbfb49a });
+    const corda = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.035, 8, 20), matCorda);
+    corda.position.y = 0.66;
+    corda.rotation.x = Math.PI / 2;
+    const pingente = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.34, 8), matCorda);
+    pingente.position.set(0.18, 0.5, 0.62);
+
+    // capuz: esfera parcial com abertura funda virada pra mesa
+    const capuzGrp = new THREE.Group();
+    const capuz = new THREE.Mesh(
+      new THREE.SphereGeometry(0.42, 20, 14, 0, Math.PI * 1.55),
+      new THREE.MeshLambertMaterial({ color: corTunica, side: THREE.DoubleSide })
+    );
+    capuz.rotation.y = Math.PI / 2 + (Math.PI * 0.45) / 2; // abertura centrada em +z
     capuz.castShadow = true;
-
-    // gola baixa — não cobre a boca
-    const gola = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 0.28, 7), matTunica);
-    gola.position.y = 1.0;
-
-    // o rosto é um buraco: disco preto na boca do capuz
-    const rosto = new THREE.Mesh(
-      new THREE.CircleGeometry(0.3, 8),
+    // o vazio: esfera preta fosca preenchendo o interior
+    const vazio = new THREE.Mesh(
+      new THREE.SphereGeometry(0.33, 12, 10),
       new THREE.MeshBasicMaterial({ color: 0x0a090c })
     );
-    rosto.position.set(0, 1.3, 0.42);
-    rosto.rotation.x = -0.08;
+    vazio.position.z = -0.04;
+    capuzGrp.add(capuz, vazio);
+    capuzGrp.position.y = ALTURA_ROSTO + 0.08;
+    capuzGrp.rotation.x = 0.12; // debruçado sobre a mesa
+    if (opts.juiz) {
+      capuzGrp.scale.setScalar(1.18);
+      capuzGrp.position.y += 0.08;
+    }
 
-    this.corpo.add(tunica, capuz, gola, rosto);
+    this.corpo.add(tunica, corda, pingente, capuzGrp);
 
-    // carinha luminosa: olhos + boca (manequim não tem — capuz vazio)
+    // carinha luminosa (manequim não tem — capuz vazio)
     if (!this.manequim) {
       const corRosto = opts.juiz ? '#ff3b2f' : CREME;
       for (const e of EXPRESSOES) {
@@ -203,14 +220,14 @@ export class Reu {
         this.texturas.push(t);
       }
       this.rostoMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.44, 0.33),
+        new THREE.PlaneGeometry(0.42, 0.32),
         new THREE.MeshBasicMaterial({
           map: this.rostoTex.neutro,
           transparent: true,
           depthWrite: false,
         })
       );
-      this.rostoMesh.position.set(0, 1.3, 0.45);
+      this.rostoMesh.position.set(0, ALTURA_ROSTO, 0.4);
       this.rostoMesh.rotation.x = -0.08;
       this.corpo.add(this.rostoMesh);
     }
@@ -222,8 +239,8 @@ export class Reu {
       new THREE.PlaneGeometry(0.44, 0.26),
       new THREE.MeshLambertMaterial({ map: tc })
     );
-    cracha.position.set(0.16, 0.72, 0.56);
-    cracha.rotation.x = -0.22;
+    cracha.position.set(0.17, 1.08, 0.47);
+    cracha.rotation.x = -0.24;
     cracha.rotation.z = -0.1;
     this.corpo.add(cracha);
 
@@ -234,26 +251,26 @@ export class Reu {
         new THREE.PlaneGeometry(0.6, 0.34),
         new THREE.MeshLambertMaterial({ map: tp })
       );
-      plaq.position.set(0, 0.55, 0.62);
-      plaq.rotation.x = -0.24;
+      plaq.position.set(0, 0.9, 0.56);
+      plaq.rotation.x = -0.26;
       plaq.rotation.z = 0.08;
       this.corpo.add(plaq);
     }
 
     this.group.add(this.corpo);
 
-    // mãos-luva: palma facetada + polegar + punho na cor da túnica
+    // luvas arredondadas: palma + polegar + punho na cor da túnica
     if (!this.manequim) {
-      const matLuva = new THREE.MeshLambertMaterial({ color: '#e9e5db', flatShading: true });
+      const matLuva = new THREE.MeshLambertMaterial({ color: '#e9e5db' });
       for (const lado of [-1, 1]) {
         const mao = new THREE.Group();
-        const palma = new THREE.Mesh(new THREE.IcosahedronGeometry(0.15, 0), matLuva);
-        palma.scale.set(0.85, 0.62, 1.05);
+        const palma = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 9), matLuva);
+        palma.scale.set(0.9, 0.65, 1.1);
         palma.castShadow = true;
-        const polegar = new THREE.Mesh(new THREE.IcosahedronGeometry(0.06, 0), matLuva);
-        polegar.position.set(0.12 * lado, 0.02, 0.05);
-        const punho = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.1, 7), matTunica);
-        punho.position.set(-0.02 * lado, 0.02, -0.14);
+        const polegar = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), matLuva);
+        polegar.position.set(0.12 * lado, 0.03, 0.06);
+        const punho = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.12, 12), matTunica);
+        punho.position.set(-0.02 * lado, 0.02, -0.15);
         punho.rotation.x = Math.PI / 2;
         mao.add(palma, polegar, punho);
         const base = new THREE.Vector3(0.52 * lado, BASE_MAO_Y, 0.88);
@@ -264,15 +281,15 @@ export class Reu {
       }
     }
 
-    // cadeira (trono de encosto alto pro juiz)
-    const matCadeira = new THREE.MeshLambertMaterial({ color: 0x1b1a20 });
+    // cadeira (trono de encosto alto pro juiz) — clara o bastante pra existir
+    const matCadeira = new THREE.MeshLambertMaterial({ color: 0x35333c });
     const assento = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.1, 0.95), matCadeira);
     assento.position.set(0, -0.3, -0.1);
     const encosto = new THREE.Mesh(
-      new THREE.BoxGeometry(1.05, opts.juiz ? 2.6 : 1.6, 0.1),
+      new THREE.BoxGeometry(1.05, opts.juiz ? 2.8 : 1.8, 0.1),
       matCadeira
     );
-    encosto.position.set(0, opts.juiz ? 1.0 : 0.5, -0.62);
+    encosto.position.set(0, opts.juiz ? 1.1 : 0.6, -0.68);
     encosto.castShadow = true;
     this.group.add(assento, encosto);
   }
@@ -292,6 +309,7 @@ export class Reu {
     this.anim = { tipo, t: 0 };
     if (tipo === 'rir' || tipo === 'festejar') this.setExpressao('riso');
     if (tipo === 'facepalm') this.setExpressao('desprezo');
+    if (tipo === 'soco') this.setExpressao('desprezo');
   }
 
   /** Compat: soco seco na mesa. */
@@ -300,14 +318,15 @@ export class Reu {
   }
 
   tick(t: number, dt: number) {
-    // respiração base — tudo abaixo soma por cima disso
+    // respiração base — as ações somam por cima
     const resp = Math.sin(t * 1.3 + this.fase);
     this.corpo.position.y = resp * 0.025;
     this.corpo.rotation.x = 0;
+    this.corpo.rotation.y = 0;
     this.corpo.rotation.z = Math.sin(t * 0.45 + this.fase) * 0.035;
     if (this.manequim) return;
 
-    // pose idle das mãos (flutuando na beirada)
+    // pose idle das mãos (flutuando na beirada da mesa)
     const alvo: THREE.Vector3[] = [
       this.baseMaos[0].clone().setY(BASE_MAO_Y + Math.sin(t * 2.1 + this.fase) * 0.03),
       this.baseMaos[1].clone().setY(BASE_MAO_Y + Math.cos(t * 1.8 + this.fase) * 0.03),
@@ -319,45 +338,56 @@ export class Reu {
       const k = Math.min(a.t, 1);
       switch (a.tipo) {
         case 'soco': {
-          const e = Math.sin(k * Math.PI);
-          alvo[0].y -= e * 0.26;
-          alvo[1].y -= e * 0.26;
-          this.corpo.rotation.x = e * 0.14;
+          // antecipação: sobe rápido, CRAVA na mesa, volta
+          let dy: number;
+          if (k < 0.35) dy = 0.22 * (k / 0.35);
+          else dy = Math.max(0.22 - 0.56 * Math.sin(((k - 0.35) / 0.65) * Math.PI), -0.26);
+          alvo[0].y += dy;
+          alvo[1].y += dy;
+          this.corpo.rotation.x = 0.24 * Math.sin(k * Math.PI);
           break;
         }
         case 'apontar': {
-          // dedo em riste pro centro da mesa, segurando a acusação
-          const e = pulso(k, 0.18, 0.72);
-          alvo[1].lerp(new THREE.Vector3(0.22, 0.9, 1.45), e);
-          this.corpo.rotation.x = e * 0.12;
+          // dedo em riste, tremendo de raiva enquanto acusa
+          const e = pulso(k, 0.15, 0.75);
+          const tremor = e >= 1 ? Math.sin(t * 22) * 0.025 : 0;
+          alvo[1].lerp(new THREE.Vector3(0.24 + tremor, 0.95 + tremor, 1.6), e);
+          this.corpo.rotation.x = e * 0.18;
           break;
         }
         case 'aplaudir': {
-          const e = pulso(k, 0.15, 0.85);
-          const batida = Math.abs(Math.sin(k * Math.PI * 3)); // 3 palmas
-          alvo[0].lerp(new THREE.Vector3(-0.1 - batida * 0.22, 0.72, 0.72), e);
-          alvo[1].lerp(new THREE.Vector3(0.1 + batida * 0.22, 0.72, 0.72), e);
+          const e = pulso(k, 0.12, 0.85);
+          const batida = Math.abs(Math.sin(k * Math.PI * 4)); // 4 palmas
+          alvo[0].lerp(new THREE.Vector3(-0.06 - batida * 0.26, 0.85, 0.75), e);
+          alvo[1].lerp(new THREE.Vector3(0.06 + batida * 0.26, 0.85, 0.75), e);
+          this.corpo.rotation.z += Math.sin(k * Math.PI * 8) * 0.025 * e;
           break;
         }
         case 'festejar': {
-          // mãos pro alto + pulinhos
-          const e = pulso(k, 0.2, 0.8);
-          alvo[0].lerp(new THREE.Vector3(-0.5, 1.55, 0.35), e);
-          alvo[1].lerp(new THREE.Vector3(0.5, 1.55, 0.35), e);
-          this.corpo.position.y += Math.abs(Math.sin(k * Math.PI * 2)) * 0.13 * e;
+          // mãos pro alto abanando + pulinhos
+          const e = pulso(k, 0.18, 0.8);
+          const abanoL = Math.sin(t * 10) * 0.1 * e;
+          const abanoR = Math.sin(t * 10 + Math.PI) * 0.1 * e;
+          alvo[0].lerp(new THREE.Vector3(-0.55 + abanoL, 1.85, 0.3), e);
+          alvo[1].lerp(new THREE.Vector3(0.55 + abanoR, 1.85, 0.3), e);
+          this.corpo.position.y += Math.abs(Math.sin(k * Math.PI * 3)) * 0.18 * e;
           break;
         }
         case 'facepalm': {
-          const e = pulso(k, 0.22, 0.75);
-          alvo[1].lerp(new THREE.Vector3(0.06, 1.24, 0.52), e);
-          this.corpo.rotation.x = -e * 0.08; // recosta, decepcionado
+          // mão na cara + balançando a cabeça em negação
+          const e = pulso(k, 0.2, 0.72);
+          alvo[1].lerp(new THREE.Vector3(0.06, ALTURA_ROSTO + 0.02, 0.55), e);
+          this.corpo.rotation.x = -e * 0.1;
+          this.corpo.rotation.y = Math.sin(t * 9) * 0.08 * e;
           break;
         }
         case 'rir': {
+          // gargalhada: cabeça pra trás, mãos na barriga, sacudindo inteiro
           const e = pulso(k, 0.15, 0.85);
-          this.corpo.rotation.z += Math.sin(t * 28) * 0.045 * e; // sacode de rir
-          alvo[0].y += Math.abs(Math.sin(t * 14)) * 0.06 * e;
-          alvo[1].y += Math.abs(Math.sin(t * 14 + 1)) * 0.06 * e;
+          this.corpo.rotation.x = -0.16 * e;
+          this.corpo.rotation.z += Math.sin(t * 26) * 0.05 * e;
+          alvo[0].lerp(new THREE.Vector3(-0.28, 0.6 + Math.abs(Math.sin(t * 13)) * 0.07, 0.6), e);
+          alvo[1].lerp(new THREE.Vector3(0.28, 0.6 + Math.abs(Math.sin(t * 13 + 1)) * 0.07, 0.6), e);
           break;
         }
       }
