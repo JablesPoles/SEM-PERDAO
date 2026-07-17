@@ -9,6 +9,7 @@
 import { isMuted } from '@/lib/sounds';
 
 let ctx: AudioContext | null = null;
+let ambiente: { master: GainNode; fontes: AudioScheduledSourceNode[] } | null = null;
 
 function ac(): AudioContext | null {
   if (typeof window === 'undefined') return null;
@@ -89,6 +90,88 @@ function tocar(fn: (audio: AudioContext) => void) {
   const audio = ac();
   if (!audio) return;
   fn(audio);
+}
+
+/**
+ * Drone grave contínuo do porão. Começa só depois de um gesto do usuário,
+ * respeita o mute existente e não depende de arquivo de áudio.
+ */
+export function iniciarAmbiente() {
+  if (ambiente || isMuted()) return;
+  const audio = ac();
+  if (!audio) return;
+
+  const master = audio.createGain();
+  master.gain.setValueAtTime(0.0001, audio.currentTime);
+  master.gain.exponentialRampToValueAtTime(0.026, audio.currentTime + 1.8);
+  master.connect(audio.destination);
+
+  const filtro = audio.createBiquadFilter();
+  filtro.type = 'lowpass';
+  filtro.frequency.value = 230;
+  filtro.Q.value = 0.7;
+  filtro.connect(master);
+
+  const fontes: AudioScheduledSourceNode[] = [];
+  const criarDrone = (freq: number, ganho: number, tipo: OscillatorType, cents: number) => {
+    const osc = audio.createOscillator();
+    osc.type = tipo;
+    osc.frequency.value = freq;
+    osc.detune.value = cents;
+    const volume = audio.createGain();
+    volume.gain.value = ganho;
+    osc.connect(volume).connect(filtro);
+    osc.start();
+    fontes.push(osc);
+  };
+
+  criarDrone(43.65, 0.55, 'sine', -5);
+  criarDrone(65.41, 0.18, 'triangle', 7);
+
+  // Ar parado/ventilação: ruído longo em loop, quase subliminar.
+  const n = Math.floor(audio.sampleRate * 4);
+  const b = audio.createBuffer(1, n, audio.sampleRate);
+  const dados = b.getChannelData(0);
+  let anterior = 0;
+  for (let i = 0; i < n; i++) {
+    anterior = anterior * 0.985 + (Math.random() * 2 - 1) * 0.015;
+    dados[i] = anterior;
+  }
+  const ar = audio.createBufferSource();
+  ar.buffer = b;
+  ar.loop = true;
+  const arFiltro = audio.createBiquadFilter();
+  arFiltro.type = 'bandpass';
+  arFiltro.frequency.value = 310;
+  arFiltro.Q.value = 0.45;
+  const arVolume = audio.createGain();
+  arVolume.gain.value = 0.2;
+  ar.connect(arFiltro).connect(arVolume).connect(master);
+  ar.start();
+  fontes.push(ar);
+
+  // Oscilação lenta: a sala parece respirar sem virar uma música melódica.
+  const lfo = audio.createOscillator();
+  lfo.frequency.value = 0.085;
+  const lfoGanho = audio.createGain();
+  lfoGanho.gain.value = 55;
+  lfo.connect(lfoGanho).connect(filtro.frequency);
+  lfo.start();
+  fontes.push(lfo);
+
+  ambiente = { master, fontes };
+}
+
+/** Encerra o drone sem estalo quando a cena 3D é desmontada. */
+export function pararAmbiente() {
+  if (!ambiente || !ctx) return;
+  const atual = ambiente;
+  ambiente = null;
+  const fim = ctx.currentTime + 0.45;
+  atual.master.gain.cancelScheduledValues(ctx.currentTime);
+  atual.master.gain.setValueAtTime(Math.max(atual.master.gain.value, 0.0001), ctx.currentTime);
+  atual.master.gain.exponentialRampToValueAtTime(0.0001, fim);
+  for (const fonte of atual.fontes) fonte.stop(fim + 0.02);
 }
 
 /** Martelo do juiz: estalo seco + corpo grave + eco de porão. */

@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Reu, EXPRESSOES, type Expressao, type Acao } from './reus';
 import { avatarColor } from '@/components/avatar';
-import { somMartelada, somCarta, somZap } from './sons3d';
+import { iniciarAmbiente, pararAmbiente, somMartelada, somCarta, somZap } from './sons3d';
 
 // Paleta "Brutal Minimal — Sem Perdão" (mesmos tokens do globals.css)
 const COR = {
@@ -201,7 +201,7 @@ export class RetroMesa {
   private blitScene = new THREE.Scene();
   private blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private blitMat: THREE.ShaderMaterial;
-  private clock = new THREE.Clock();
+  private timer = new THREE.Timer();
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2(-2, -2);
   private cartas: Carta[] = [];
@@ -211,6 +211,8 @@ export class RetroMesa {
   private spot!: THREE.SpotLight;
   private brilho!: THREE.PointLight;
   private bulbo!: THREE.Mesh;
+  private frisoMat!: THREE.MeshLambertMaterial;
+  private recorteVermelho!: THREE.DirectionalLight;
   private blinkAte = 0;
   private proximoCaos = 3;
   private martelo!: THREE.Group;
@@ -231,15 +233,16 @@ export class RetroMesa {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.BasicShadowMap; // sombra dura = retrô
 
-    this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 60);
-    this.camera.position.set(0, 5.4, 7.4);
+    this.camera = new THREE.PerspectiveCamera(47, 1, 0.1, 60);
+    this.camera.position.set(0, 4.35, 8.6);
 
     this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.target.set(0, 0.55, 0);
+    this.controls.target.set(0, 0.45, 0.25);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.autoRotate = true;
-    this.controls.autoRotateSpeed = 0.7;
+    // A órbita continua livre, mas a composição não foge sozinha nem transforma
+    // a mão em uma cerca lateral enquanto o usuário avalia a cena.
+    this.controls.autoRotate = false;
     this.controls.minDistance = 4.5;
     this.controls.maxDistance = 13;
     this.controls.maxPolarAngle = Math.PI / 2.15;
@@ -254,6 +257,7 @@ export class RetroMesa {
     this.montarLampada();
     this.montarReus();
     this.montarCartas(opts.pretas, opts.brancas);
+    this.timer.connect(document);
 
     // ── passe de pixelização ──
     this.rt = new THREE.WebGLRenderTarget(2, 2, {
@@ -265,8 +269,8 @@ export class RetroMesa {
       uniforms: {
         tDiffuse: { value: this.rt.texture },
         tBayer: { value: this.criarBayer() },
-        uLevels: { value: 7.0 },
-        uDither: { value: 0.9 },
+        uLevels: { value: 8.0 },
+        uDither: { value: 0.58 },
         uPixel: { value: this.pixelSize },
         uTime: { value: 0 },
       },
@@ -286,13 +290,13 @@ export class RetroMesa {
           // ── vidro do tubo: curvatura de barril ──
           vec2 d = vUv - 0.5;
           float r2 = dot(d, d);
-          vec2 uv = 0.5 + d * (1.0 + 0.16 * r2);
+          vec2 uv = 0.5 + d * (1.0 + 0.11 * r2);
           if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
             gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
             return;
           }
           // aberração cromática crescendo pra borda
-          vec2 ca = d * r2 * 0.06;
+          vec2 ca = d * r2 * 0.022;
           vec3 c;
           c.r = texture2D(tDiffuse, uv + ca).r;
           c.g = texture2D(tDiffuse, uv).g;
@@ -302,26 +306,26 @@ export class RetroMesa {
           c += limiar * (uDither / uLevels);
           c = floor(c * uLevels + 0.5) / uLevels;
           // fósforo nunca apaga: levanta os pretos (o escuro fica VISÍVEL)
-          c = c * 0.95 + vec3(0.045);
+          c = c * 0.94 + vec3(0.055);
           // máscara RGB sutil (grade de fósforo) por coluna de pixelão
           float m = mod(floor(gl_FragCoord.x / uPixel), 3.0);
-          c *= vec3(0.96) + 0.08 * vec3(
+          c *= vec3(0.985) + 0.03 * vec3(
             m == 0.0 ? 1.0 : 0.0,
             m == 1.0 ? 1.0 : 0.0,
             m == 2.0 ? 1.0 : 0.0
           );
           // scanlines alinhadas ao pixelão
           float linha = mod(floor(gl_FragCoord.y / uPixel), 2.0);
-          c *= 1.0 - 0.1 * linha;
+          c *= 1.0 - 0.055 * linha;
           // vinheta pesada nos cantos — o sinistro mora na borda
           float vig = smoothstep(0.85, 0.3, length(d) * 1.25);
-          c *= 0.55 + 0.45 * vig;
+          c *= 0.68 + 0.32 * vig;
           // grão animado
           float g = fract(sin(dot(gl_FragCoord.xy + mod(uTime, 10.0) * 137.0, vec2(12.9898, 78.233))) * 43758.5453);
-          c += (g - 0.5) * 0.05;
+          c += (g - 0.5) * 0.025;
           // faixa rolando + tremidinha de sinal fraco
-          c *= 1.0 + 0.035 * sin(uv.y * 9.42 - uTime * 1.1);
-          c *= 1.0 + 0.015 * sin(uTime * 84.0);
+          c *= 1.0 + 0.02 * sin(uv.y * 9.42 - uTime * 1.1);
+          c *= 1.0 + 0.008 * sin(uTime * 84.0);
           // cantos arredondados do vidro
           vec2 q = abs(d) * 2.0;
           c *= smoothstep(1.03, 0.95, max(q.x, q.y) + 0.14 * min(q.x, q.y));
@@ -334,6 +338,7 @@ export class RetroMesa {
     this.blitScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.blitMat));
 
     this.resize();
+    window.addEventListener('pointerdown', this.onPrimeiroGesto);
     canvas.addEventListener('pointermove', this.onPointerMove);
     canvas.addEventListener('click', this.onClick);
     this.loop();
@@ -379,21 +384,25 @@ export class RetroMesa {
   private montarCenario() {
     // Tribunal do Porão v2: cena VISÍVEL — o clima sinistro vem do filtro de
     // TV (scanlines/vinheta/grão no shader) e da lâmpada, não da escuridão.
-    const hemi = new THREE.HemisphereLight(0xfff0dc, 0x4a4855, 1.5);
-    const recorte = new THREE.DirectionalLight(COR.red, 1.3);
-    recorte.position.set(-6, 2.5, -6);
-    this.scene.add(hemi, recorte);
+    const hemi = new THREE.HemisphereLight(0xfff0dc, 0x6b6a72, 1.75);
+    const preenchimento = new THREE.DirectionalLight(COR.paper, 0.65);
+    preenchimento.position.set(4, 6, 7);
+    // Vermelho apagado no cotidiano; só acende quando existe veredito.
+    this.recorteVermelho = new THREE.DirectionalLight(COR.red, 0);
+    this.recorteVermelho.position.set(-6, 2.5, -6);
+    this.scene.add(hemi, preenchimento, this.recorteVermelho);
 
-    // mesa: cilindro baixo e largo, com friso vermelho na borda
+    // mesa: cilindro baixo e largo; o friso só fica vermelho no veredito
     const tampo = new THREE.Mesh(
       new THREE.CylinderGeometry(4.4, 4.4, 0.5, 24),
       new THREE.MeshLambertMaterial({ color: COR.mesa, map: this.texRuido('#cfcfcf', 0.13, 5) })
     );
     tampo.position.y = -0.26;
     tampo.receiveShadow = true;
+    this.frisoMat = new THREE.MeshLambertMaterial({ color: COR.panel });
     const friso = new THREE.Mesh(
       new THREE.TorusGeometry(4.4, 0.055, 6, 48),
-      new THREE.MeshLambertMaterial({ color: COR.red })
+      this.frisoMat
     );
     friso.rotation.x = Math.PI / 2;
     friso.position.y = -0.01;
@@ -515,7 +524,11 @@ export class RetroMesa {
 
   /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake incluso. */
   martelada() {
-    if (this.marteloT < 0) this.marteloT = 0;
+    if (this.marteloT < 0) {
+      this.marteloT = 0;
+      this.frisoMat.color.setHex(COR.red);
+      this.recorteVermelho.intensity = 0.7;
+    }
   }
 
   private montarCartas(pretas: string[], brancas: string[]) {
@@ -587,7 +600,7 @@ export class RetroMesa {
       alvoRot,
       origemPos: c.group.position.clone(),
       origemRot: c.group.rotation.clone(),
-      t0: this.clock.getElapsedTime() + atraso,
+      t0: this.timer.getElapsed() + atraso,
       dur: 0.7,
     };
   }
@@ -596,6 +609,15 @@ export class RetroMesa {
     const r = this.canvas.getBoundingClientRect();
     this.pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   };
+
+  private onPrimeiroGesto = () => {
+    iniciarAmbiente();
+  };
+
+  setSomAtivo(ativo: boolean) {
+    if (ativo) iniciarAmbiente();
+    else pararAmbiente();
+  }
 
   private onClick = () => {
     const hit = this.provaSobOPonteiro();
@@ -634,11 +656,12 @@ export class RetroMesa {
     this.camera.updateProjectionMatrix();
   }
 
-  private loop = () => {
+  private loop = (timestamp?: number) => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.loop);
-    const dt = Math.min(this.clock.getDelta(), 0.05);
-    const t = this.clock.getElapsedTime();
+    this.timer.update(timestamp);
+    const dt = Math.min(this.timer.getDelta(), 0.05);
+    const t = this.timer.getElapsed();
 
     this.controls.update();
 
@@ -681,6 +704,7 @@ export class RetroMesa {
         ang = -1.4 + 1.55 * ((k - 0.45) / 0.13); // CRAVA
         if (this.shake === 0 && k > 0.55) {
           this.shake = 0.22;
+          this.recorteVermelho.intensity = 2.2;
           somMartelada();
           for (const r of this.reus) r.setExpressao('choque');
           this.juizReu?.acao('soco');
@@ -693,6 +717,8 @@ export class RetroMesa {
         this.marteloT = -1;
         this.martelo.rotation.z = 0;
         this.shake = 0;
+        this.frisoMat.color.setHex(COR.panel);
+        this.recorteVermelho.intensity = 0;
       }
     }
 
@@ -737,9 +763,12 @@ export class RetroMesa {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    window.removeEventListener('pointerdown', this.onPrimeiroGesto);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('click', this.onClick);
     this.controls.dispose();
+    this.timer.dispose();
+    pararAmbiente();
     for (const r of this.reus) r.dispose();
     this.rt.dispose();
     this.blitMat.dispose();

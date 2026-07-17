@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ALL_BLACK, ALL_WHITE } from '@/lib/cards';
+import { isMuted, setMuted } from '@/lib/sounds';
 import type { RetroMesa } from '@/lib/three/retroMesa';
 import { EXPRESSOES, ACOES, type Expressao, type Acao } from '@/lib/three/reus';
 
@@ -34,9 +35,12 @@ export default function Mesa3D() {
   const cenaRef = useRef<RetroMesa | null>(null);
   const [pixel, setPixel] = useState(2);
   const [pronto, setPronto] = useState(false);
+  const [somMudo, setSomMudo] = useState(false);
 
   useEffect(() => {
     let viva = true;
+    let onResize: (() => void) | null = null;
+    const muteFrame = requestAnimationFrame(() => setSomMudo(isMuted()));
     (async () => {
       // espera as webfonts pra não assar a fonte fallback nas texturas das cartas
       await document.fonts.ready;
@@ -48,12 +52,14 @@ export default function Mesa3D() {
         pretas: sortear(ALL_BLACK, 1).map((c) => c.text),
         brancas: sortear(ALL_WHITE, 10).map((c) => c.text),
       });
-      const onResize = () => cenaRef.current?.resize();
+      onResize = () => cenaRef.current?.resize();
       window.addEventListener('resize', onResize);
       setPronto(true);
     })();
     return () => {
       viva = false;
+      cancelAnimationFrame(muteFrame);
+      if (onResize) window.removeEventListener('resize', onResize);
       cenaRef.current?.dispose();
       cenaRef.current = null;
     };
@@ -62,6 +68,13 @@ export default function Mesa3D() {
   const trocarPixel = (p: number) => {
     setPixel(p);
     cenaRef.current?.setPixelSize(p);
+  };
+
+  const trocarSom = () => {
+    const novoMudo = !somMudo;
+    setSomMudo(novoMudo);
+    setMuted(novoMudo);
+    cenaRef.current?.setSomAtivo(!novoMudo);
   };
 
   return (
@@ -89,22 +102,34 @@ export default function Mesa3D() {
           </p>
         </div>
 
-        <div className="pointer-events-auto flex flex-col items-end gap-2">
-          <span className="text-paper/50 text-[10px] font-bold tracking-widest uppercase">pixel</span>
-          <div className="flex gap-1.5">
-            {PIXELS.map((p) => (
-              <button
-                key={p}
-                onClick={() => trocarPixel(p)}
-                className={`h-9 w-9 rounded-lg font-display text-[13px] transition-all active:scale-90 ${
-                  pixel === p
-                    ? 'btn-red'
-                    : 'bg-white/5 text-paper/70 border border-white/15 hover:bg-white/10'
-                }`}
-              >
-                {p}
-              </button>
-            ))}
+        <div className="pointer-events-auto flex items-end gap-4">
+          <div className="flex flex-col items-end gap-2">
+            <span className="text-paper/50 text-[10px] font-bold tracking-widest uppercase">som</span>
+            <button
+              onClick={trocarSom}
+              className="h-9 px-3 rounded-lg bg-white/5 text-paper/80 border border-white/15 hover:bg-white/10 active:scale-90 font-bold text-[11px] transition-all"
+              aria-label={somMudo ? 'Ativar som' : 'Silenciar som'}
+            >
+              {somMudo ? 'MUDO' : '♪ ON'}
+            </button>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <span className="text-paper/50 text-[10px] font-bold tracking-widest uppercase">pixel</span>
+            <div className="flex gap-1.5">
+              {PIXELS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => trocarPixel(p)}
+                  className={`h-9 w-9 rounded-lg font-display text-[13px] transition-all active:scale-90 ${
+                    pixel === p
+                      ? 'btn-red'
+                      : 'bg-white/5 text-paper/70 border border-white/15 hover:bg-white/10'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -147,7 +172,7 @@ export default function Mesa3D() {
       {/* rodapé */}
       <div className="absolute bottom-0 right-0 p-4 sm:p-6 flex justify-end pointer-events-none max-w-[45%]">
         <p className="text-paper/45 text-[11.5px] font-medium tracking-wide text-right">
-          arrasta pra orbitar · rolagem aproxima ·{' '}
+          arrasta pra orbitar · rolagem aproxima · primeiro gesto liga o porão ·{' '}
           <span className="text-red font-bold">clique nas provas lacradas</span> pra revelar
         </p>
       </div>

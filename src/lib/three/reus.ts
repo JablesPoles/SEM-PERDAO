@@ -200,7 +200,12 @@ export class Reu {
   constructor(nome: string, cor: string, opts: ReuOpts = {}) {
     this.manequim = !!opts.manequim;
     const corTunica = new THREE.Color(this.manequim ? '#4a4855' : cor);
-    const matTunica = new THREE.MeshLambertMaterial({ color: corTunica, map: texTecido() });
+    const emissivoTunica = corTunica.clone().multiplyScalar(0.14);
+    const matTunica = new THREE.MeshLambertMaterial({
+      color: corTunica,
+      map: texTecido(),
+      emissive: emissivoTunica,
+    });
 
     // túnica drapeada: perfil curvo (bainha larga, cintura, ombros caídos)
     const perfil = [
@@ -227,11 +232,17 @@ export class Reu {
 
     // capuz: esfera parcial com abertura funda virada pra mesa
     const capuzGrp = new THREE.Group();
+    const aberturaCapuz = Math.PI * 0.58;
     const capuz = new THREE.Mesh(
-      new THREE.SphereGeometry(0.42, 20, 14, 0, Math.PI * 1.55),
-      new THREE.MeshLambertMaterial({ color: corTunica, map: texTecido(), side: THREE.DoubleSide })
+      new THREE.SphereGeometry(0.42, 20, 14, 0, Math.PI * 2 - aberturaCapuz),
+      new THREE.MeshLambertMaterial({
+        color: corTunica,
+        map: texTecido(),
+        emissive: emissivoTunica,
+        side: THREE.DoubleSide,
+      })
     );
-    capuz.rotation.y = Math.PI / 2 + (Math.PI * 0.45) / 2; // abertura centrada em +z
+    capuz.rotation.y = Math.PI / 2 + aberturaCapuz / 2; // abertura centrada em +z
     capuz.castShadow = true;
     // o vazio: esfera preta fosca preenchendo o interior — o rosto mora NELA
     const vazio = new THREE.Mesh(
@@ -250,14 +261,16 @@ export class Reu {
         this.texturas.push(t);
       }
       this.rostoMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.38, 0.29),
+        new THREE.PlaneGeometry(0.44, 0.33),
         new THREE.MeshBasicMaterial({
           map: this.rostoTex.neutro,
           transparent: true,
           depthWrite: false,
         })
       );
-      this.rostoMesh.position.set(0, -0.03, 0.35);
+      // Acima da gola da túnica e um pouco à frente do vazio: a carinha precisa
+      // morar no capuz, não parecer estampada sobre o robe.
+      this.rostoMesh.position.set(0, 0.15, 0.38);
       capuzGrp.add(this.rostoMesh);
     }
 

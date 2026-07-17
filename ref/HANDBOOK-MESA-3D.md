@@ -42,26 +42,31 @@ Cena → render target pequeno (`largura / pixelSize`, NearestFilter) → quad
 fullscreen com o shader do **filtro CRT**. O retrô vem DAÍ, não dos modelos
 (modelos podem ser suaves). Uniforms do shader:
 
-- `uLevels` (7) — níveis de posterização por canal
-- `uDither` (0.9) — força do dithering Bayer 4x4 (alinhado ao pixelão)
+- `uLevels` (8) — níveis de posterização por canal
+- `uDither` (0.58) — força do dithering Bayer 4x4 (alinhado ao pixelão)
 - `uPixel` — tamanho do pixelão (sincronizado com o seletor da página)
 - `uTime` — anima grão, faixa rolando e flicker
-- No código do shader: curvatura de tubo (0.16), aberração cromática (0.06),
-  máscara RGB (±0.04), scanlines (0.1), vinheta (0.55+0.45), pretos
-  levantados (0.045), grão (0.05), cantos arredondados
+- No código do shader: curvatura de tubo (0.11), aberração cromática (0.022),
+  máscara RGB (±0.015), scanlines (0.055), vinheta (0.68+0.32), pretos
+  levantados (0.055), grão (0.025), cantos arredondados. A calibração v3
+  preserva a TV velha sem triturar rostos e texto em fragmentos RGB.
 
 ### Luz (filosofia: cena VISÍVEL, clima vem do filtro + lâmpada)
-- `HemisphereLight` creme/cinza 1.5 — iluminação geral
+- `HemisphereLight` creme/cinza 1.75 + preenchimento creme 0.65 — iluminação
+  geral mais uniforme entre os assentos
 - Lâmpada pendurada (`montarLampada`): SpotLight 170 (cone 1.12 — calculado
   pra alcançar as cabeças dos réus em raio 5.15), PointLight 8 no bulbo,
   balanço senoidal, zumbido (±6%) e apagões de susto (~0.2% por frame)
-- `DirectionalLight` vermelho 1.3 — o recorte "de lugar nenhum"
+- `DirectionalLight` vermelho começa apagado e só acende durante a martelada;
+  o friso da mesa segue a mesma regra (painel no cotidiano, vermelho no veredito)
 
 ### Os Réus (reus.ts)
 - Túnica: LatheGeometry (perfil drapeado) + textura de tecido em canvas;
   capuz: esfera parcial com abertura; dentro, o vazio preto e a **carinha
   luminosa** (olhos+boca MeshBasic — sempre brilham; juiz em vermelho).
   A carinha é FILHA do grupo do capuz (acompanha inclinação/escala).
+- Calibração v3: abertura do capuz mais larga; rosto 0.15 acima e um pouco à
+  frente do vazio, 0.44×0.33; emissivo sutil no tecido evita réus sumirem.
 - Expressões: neutro, riso, choque, desprezo, sono (`drawRosto`, 64x48 px)
 - Ações (`acao()`): soco, apontar, aplaudir, festejar, facepalm, rir —
   durações em `DURACAO`, envelope `pulso()` sobe-segura-volta, tudo
@@ -76,12 +81,17 @@ fullscreen com o shader do **filtro CRT**. O retrô vem DAÍ, não dos modelos
 - `martelada()`: juiz ergue (45% do tempo), CRAVA (13%), assenta; no impacto:
   screen shake 0.22 com decaimento exp, todos fazem cara de choque, som
 - API de teste da página: `testarExpressao(e)`, `testarAcao(a)`, `martelada()`
+- Câmera de laboratório: enquadramento fixo próximo do POV; órbita manual
+  continua disponível, mas a rotação automática foi desligada.
 
 ### Sons (sons3d.ts)
 Sintetizados (ruído filtrado + osciladores), respeitam o mute do jogo
 (`sp-muted`). Martelada, soco, palmas, carta, zap da lâmpada, risada,
-assobio de festa. Browsers só liberam áudio após primeiro clique — sons do
-caos automático antes disso falham em silêncio (ok).
+assobio de festa. Um drone grave contínuo (duas notas subgraves + ventilação
+filtrada, modulação lenta) começa no primeiro gesto e encerra em fade ao sair
+da cena. O seletor SOM na página usa o mesmo mute do jogo. Browsers só liberam
+áudio após primeiro gesto — sons do caos automático antes disso falham em
+silêncio (ok).
 
 ## Roadmap (atualizar a cada entrega)
 
@@ -96,9 +106,12 @@ caos automático antes disso falham em silêncio (ok).
   aberração cromática, máscara RGB, cantos de vidro, flicker)
 - [x] Texturas: tecido nas túnicas, feltro na mesa, concreto no chão
 - [x] Sons do porão sintetizados ligados às ações
+- [x] Calibração v3: rosto/capuz, leitura do CRT, luz uniforme, vermelho só no
+  veredito, câmera fixa e drone ambiente com mute
 
 ### Agora (aguardando feedback do Poles)
-- [ ] Calibrar: claridade final, dose do CRT, peso das animações, sons
+- [ ] Validar a calibração v3 após hard reload: posição/escala do rosto,
+  claridade, dose do CRT e volume do drone
 
 ### Próximo (ordem do conceito §9)
 - [ ] Reações arremessadas (tomate/sapato/rosa por cima da mesa) + balões de
@@ -120,9 +133,9 @@ caos automático antes disso falham em silêncio (ok).
 
 - Cena 3D não sobrevive a HMR: mudou módulo da cena → usuário precisa de
   hard reload; se aparecer "X is not a function", reiniciar o dev server.
-- `THREE.Clock` está deprecated (warning inofensivo; trocar por `Timer` um
-  dia). Luzes do three são físicas: SpotLight/PointLight em candela — números
-  grandes (dezenas/centenas) são normais.
+- O loop usa `THREE.Timer` conectado ao `document` (pausa corretamente com a
+  aba oculta). Luzes do three são físicas: SpotLight/PointLight em candela —
+  números grandes (dezenas/centenas) são normais.
 - Fontes: texturas de canvas precisam de `document.fonts.ready` antes (a
   página já espera) e leem a família real via var CSS `--font-archivo-black`.
 - Nunca enviar campos secretos novos sem redigir em `redactStateFor`
