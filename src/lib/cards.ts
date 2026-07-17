@@ -1,4 +1,5 @@
 import { BlackCard, WhiteCard } from './types';
+import { BRAZIL_BLACK_TEXTS, BRAZIL_WHITE_TEXTS } from './cardsBrazil';
 
 // Baralho base: "Cartas Contra Tugas" (adaptação portuguesa de Cards Against
 // Humanity, CC BY-NC-SA), abrasileirado — texto em PT-BR natural e referências
@@ -317,13 +318,38 @@ export function countBlanks(text: string): number {
   return (text.match(/____/g) ?? []).length;
 }
 
-export const ALL_BLACK: BlackCard[] = BLACK_TEXTS.map((text, i) => ({
+function cardTextKey(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/_{2,}/g, '____')
+    .replace(/[^a-z0-9_]+/g, ' ')
+    .trim();
+}
+
+function mergeUniqueTexts(...groups: string[][]): string[] {
+  const seen = new Set<string>();
+  return groups.flatMap((group) => group.filter((text) => {
+    const key = cardTextKey(text);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }));
+}
+
+// Mantém o baralho anterior primeiro para preservar seus IDs e acrescenta o
+// PDF brasileiro sem repetir textos equivalentes que já existiam.
+const COMBINED_BLACK_TEXTS = mergeUniqueTexts(BLACK_TEXTS, BRAZIL_BLACK_TEXTS);
+const COMBINED_WHITE_TEXTS = mergeUniqueTexts(WHITE_TEXTS, BRAZIL_WHITE_TEXTS);
+
+export const ALL_BLACK: BlackCard[] = COMBINED_BLACK_TEXTS.map((text, i) => ({
   id: `b${i}`,
   text,
   pick: Math.max(1, countBlanks(text)),
 }));
 
-export const ALL_WHITE: WhiteCard[] = WHITE_TEXTS.map((text, i) => ({
+export const ALL_WHITE: WhiteCard[] = COMBINED_WHITE_TEXTS.map((text, i) => ({
   id: `w${i}`,
   text,
 }));
