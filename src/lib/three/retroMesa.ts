@@ -242,8 +242,8 @@ export class RetroMesa {
     this.controls.enablePan = false;
 
     // névoa fecha o vazio ao redor da mesa — o breu É o porão
-    this.scene.background = new THREE.Color(0x0c0b0f);
-    this.scene.fog = new THREE.Fog(0x0c0b0f, 10, 24);
+    this.scene.background = new THREE.Color(0x121116);
+    this.scene.fog = new THREE.Fog(0x121116, 12, 30);
 
     this.montarCenario();
     this.montarLampada();
@@ -310,8 +310,8 @@ export class RetroMesa {
     // Tribunal do Porão: quase-escuridão. A luz principal é a lâmpada pendurada
     // (montarLampada); aqui só um ambiente mínimo pra silhueta existir e o
     // recorte vermelho que vem "de lugar nenhum" — é o julgamento no ar.
-    const ambiente = new THREE.AmbientLight(0x3a3843, 0.85);
-    const recorte = new THREE.DirectionalLight(COR.red, 1.0);
+    const ambiente = new THREE.AmbientLight(0x55525e, 1.7);
+    const recorte = new THREE.DirectionalLight(COR.red, 1.1);
     recorte.position.set(-6, 2.5, -6);
     this.scene.add(ambiente, recorte);
 
@@ -378,13 +378,13 @@ export class RetroMesa {
     );
     this.bulbo.position.y = -4.42;
     // cone calculado pra molhar a mesa inteira E as cabeças dos réus (r=5.15)
-    this.spot = new THREE.SpotLight(0xfff4e0, 85, 0, 1.12, 0.45, 2);
+    this.spot = new THREE.SpotLight(0xfff4e0, 150, 0, 1.12, 0.5, 2);
     this.spot.position.y = -4.4;
     this.spot.castShadow = true;
     this.spot.shadow.mapSize.set(512, 512);
     this.spot.shadow.bias = -0.002;
     this.spot.target.position.set(0, -8.2, 0); // aponta reto pra baixo e acompanha o balanço
-    this.brilho = new THREE.PointLight(0xffe9c4, 4, 7, 2);
+    this.brilho = new THREE.PointLight(0xffe9c4, 7, 9, 2);
     this.brilho.position.y = -4.3;
     this.pendulo.add(fio, cupula, this.bulbo, this.spot, this.spot.target, this.brilho);
     this.scene.add(this.pendulo);
@@ -556,8 +556,8 @@ export class RetroMesa {
     let fator = 0.94 + 0.06 * Math.sin(t * 31) * Math.sin(t * 17.3);
     if (t > this.blinkAte && Math.random() < 0.002) this.blinkAte = t + 0.07 + Math.random() * 0.12;
     if (t < this.blinkAte) fator = 0.12;
-    this.spot.intensity = 85 * fator;
-    this.brilho.intensity = 4 * fator;
+    this.spot.intensity = 150 * fator;
+    this.brilho.intensity = 7 * fator;
     (this.bulbo.material as THREE.MeshBasicMaterial).color.setHex(fator < 0.5 ? 0x55504a : 0xfff4e0);
 
     // os réus vivem: respiração + caos aleatório (expressões e socos na mesa)

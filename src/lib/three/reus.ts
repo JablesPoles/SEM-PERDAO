@@ -1,11 +1,18 @@
 /**
- * reus.ts — Os Réus: avatares low-poly sentados à mesa do Tribunal do Porão.
+ * reus.ts — O Júri Encapuzado: avatares do Tribunal do Porão.
  *
- * Anatomia (ver ref/CONCEITO-MESA-3D.md §4):
- *   - busto low-poly na cor do avatar + crachá com o nome no peito
- *   - rosto = sprite pixelado 32x32 com expressões trocadas a seco
- *   - mãos-luva flutuantes estilo Rayman (sem braços, zero rigging)
- *   - juiz ganha capuz e cadeira alta; manequim = ausente/bot
+ * Design v2 (feedback: silhueta simples e imediatamente reconhecível, vibe
+ * Buckshot Roulette, membros soltos estilo Rayman):
+ *   - túnica low-poly com capuz pontudo, na cor do avatar
+ *   - rosto = VAZIO preto dentro do capuz, com olhos brilhantes (MeshBasic,
+ *     ignoram luz — brilham no escuro). A expressão mora nos olhos.
+ *   - mãos-luva flutuantes, sem braços
+ *   - crachá de escritório preso na túnica (o humor: seita com crachá)
+ *   - juiz: capuz mais alto e OLHOS VERMELHOS (vermelho = veredito)
+ *   - manequim (bot/ausente): túnica vazia, capuz sem olhos, plaqueta
+ *
+ * Customização futura: forma/cor dos olhos, formato do capuz, adereços em
+ * cima do capuz, rabiscos no crachá.
  */
 import * as THREE from 'three';
 
@@ -13,6 +20,7 @@ export type Expressao = 'neutro' | 'riso' | 'choque' | 'desprezo' | 'sono';
 export const EXPRESSOES: Expressao[] = ['neutro', 'riso', 'choque', 'desprezo', 'sono'];
 
 const INK = '#17161a';
+const CREME = '#f2efe9';
 
 function texCanvas(c: HTMLCanvasElement): THREE.CanvasTexture {
   const t = new THREE.CanvasTexture(c);
@@ -29,54 +37,51 @@ function fontDisplay(): string {
   return v || 'sans-serif';
 }
 
-/** Rosto pixelado 32x32 — feições em tinta sobre fundo transparente. */
-function drawFace(exp: Expressao): THREE.CanvasTexture {
+/**
+ * Olhos brilhantes 64x28 — só os olhos, sobre fundo transparente.
+ * A expressão inteira é desenhada aqui: é o que se lê a qualquer distância.
+ */
+function drawOlhos(exp: Expressao, cor: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
-  c.width = 32;
-  c.height = 32;
+  c.width = 64;
+  c.height = 28;
   const x = c.getContext('2d')!;
-  x.fillStyle = INK;
+  x.fillStyle = cor;
+  const par = (draw: (cx: number) => void) => {
+    draw(16);
+    draw(48);
+  };
   switch (exp) {
-    case 'neutro':
-      x.fillRect(8, 11, 4, 5);
-      x.fillRect(20, 11, 4, 5);
-      x.fillRect(12, 22, 8, 2);
+    case 'neutro': // dois quadrados acesos
+      par((cx) => x.fillRect(cx - 5, 8, 10, 10));
       break;
-    case 'riso':
-      x.fillRect(8, 12, 4, 2);
-      x.fillRect(20, 12, 4, 2);
-      x.fillRect(11, 19, 10, 6); // boca escancarada
-      x.fillStyle = '#f2efe9';
-      x.fillRect(12, 19, 8, 2); // dentes
+    case 'riso': // olhinhos felizes ^^ (chevrons)
+      par((cx) => {
+        x.fillRect(cx - 6, 12, 4, 4);
+        x.fillRect(cx - 2, 8, 4, 4);
+        x.fillRect(cx + 2, 12, 4, 4);
+      });
       break;
-    case 'choque':
-      x.fillRect(7, 9, 5, 7);
-      x.fillRect(20, 9, 5, 7);
-      x.fillRect(13, 19, 6, 8); // queixo caído
+    case 'choque': // arregalados
+      par((cx) => x.fillRect(cx - 6, 4, 12, 18));
       break;
-    case 'desprezo':
-      x.fillRect(7, 9, 6, 2); // sobrancelhas pesadas
-      x.fillRect(19, 9, 6, 2);
-      x.fillRect(8, 13, 4, 3); // olhos meio fechados
-      x.fillRect(20, 13, 4, 3);
-      x.fillRect(11, 22, 10, 2);
+    case 'desprezo': // frestas desconfiadas
+      par((cx) => x.fillRect(cx - 7, 11, 14, 4));
       break;
-    case 'sono':
-      x.fillRect(8, 14, 5, 2); // olhos fechados
-      x.fillRect(19, 14, 5, 2);
-      x.fillRect(14, 22, 4, 3); // boquinha aberta
+    case 'sono': // apagados, quase fechados
+      par((cx) => x.fillRect(cx - 6, 18, 12, 3));
       break;
   }
   return texCanvas(c);
 }
 
-/** Crachá de escritório torto no peito. */
+/** Crachá de escritório torto na túnica. */
 function drawCracha(nome: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 96;
   c.height = 56;
   const x = c.getContext('2d')!;
-  x.fillStyle = '#f2efe9';
+  x.fillStyle = CREME;
   x.fillRect(0, 0, 96, 56);
   x.strokeStyle = INK;
   x.lineWidth = 6;
@@ -89,7 +94,7 @@ function drawCracha(nome: string): THREE.CanvasTexture {
   return texCanvas(c);
 }
 
-/** Plaqueta pendurada no pescoço do manequim (RANDO / AUSENTE). */
+/** Plaqueta pendurada no manequim (RANDO / AUSENTE). */
 function drawPlaqueta(texto: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 128;
@@ -102,7 +107,7 @@ function drawPlaqueta(texto: string): THREE.CanvasTexture {
   x.strokeRect(2, 2, 124, 68);
   x.fillStyle = INK;
   x.beginPath();
-  x.arc(64, 12, 4, 0, Math.PI * 2); // furo do barbante
+  x.arc(64, 12, 4, 0, Math.PI * 2);
   x.fill();
   x.font = `700 24px ${fontDisplay()}`;
   x.textAlign = 'center';
@@ -121,114 +126,128 @@ export class Reu {
   readonly manequim: boolean;
   expressao: Expressao = 'neutro';
 
-  private tronco: THREE.Mesh;
-  private cabecaGrp = new THREE.Group();
+  private corpo = new THREE.Group(); // túnica + capuz + rosto — balança junto
+  private olhos: THREE.Mesh | null = null;
+  private olhosTex: Partial<Record<Expressao, THREE.CanvasTexture>> = {};
   private maos: THREE.Mesh[] = [];
-  private sprite: THREE.Sprite | null = null;
-  private faces: Partial<Record<Expressao, THREE.SpriteMaterial>> = {};
   private fase = Math.random() * Math.PI * 2;
   private slamT = -1;
   private texturas: THREE.Texture[] = [];
 
   constructor(nome: string, cor: string, opts: ReuOpts = {}) {
     this.manequim = !!opts.manequim;
-    const corBase = new THREE.Color(this.manequim ? '#d8d4cb' : cor);
+    const corTunica = new THREE.Color(this.manequim ? '#4a4855' : cor);
+    const matTunica = new THREE.MeshLambertMaterial({ color: corTunica, flatShading: true });
 
-    // busto: cilindro de 7 lados, facetado de propósito
-    this.tronco = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.4, 0.62, 1.25, 7),
-      new THREE.MeshLambertMaterial({ color: corBase, flatShading: true })
+    // túnica: saia larga afunilando nos ombros — a silhueta é UM cone encurvado
+    const tunica = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.78, 1.35, 7), matTunica);
+    tunica.position.y = 0.4;
+    tunica.castShadow = true;
+
+    // capuz pontudo (o do juiz é mais alto — hierarquia por silhueta)
+    const alturaCapuz = opts.juiz ? 1.15 : 0.8;
+    const capuz = new THREE.Mesh(new THREE.ConeGeometry(0.4, alturaCapuz, 7), matTunica);
+    capuz.position.y = 1.08 + alturaCapuz / 2;
+    capuz.rotation.x = 0.09; // levemente debruçado sobre a mesa
+    capuz.castShadow = true;
+
+    // a gola preenche o vão entre túnica e capuz
+    const gola = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.44, 0.35, 7), matTunica);
+    gola.position.y = 1.05;
+
+    // o rosto é um buraco: disco preto fosco dentro do capuz
+    const rosto = new THREE.Mesh(
+      new THREE.CircleGeometry(0.26, 8),
+      new THREE.MeshBasicMaterial({ color: 0x0a090c })
     );
-    this.tronco.position.y = 0.35;
-    this.tronco.castShadow = true;
+    rosto.position.set(0, 1.22, 0.31);
+    rosto.rotation.x = -0.06;
 
-    const corCabeca = corBase.clone().lerp(new THREE.Color('#f2efe9'), this.manequim ? 0 : 0.3);
-    const cabeca = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.35, 0),
-      new THREE.MeshLambertMaterial({ color: corCabeca, flatShading: true })
-    );
-    cabeca.castShadow = true;
-    this.cabecaGrp.position.y = 1.28;
-    this.cabecaGrp.add(cabeca);
+    this.corpo.add(tunica, capuz, gola, rosto);
 
-    // rosto: sprite sempre de frente pra câmera, encostado na cabeça
+    // olhos brilhantes — a expressão inteira (manequim não tem: capuz vazio)
     if (!this.manequim) {
+      const corOlhos = opts.juiz ? '#ff3b2f' : CREME;
       for (const e of EXPRESSOES) {
-        const t = drawFace(e);
+        const t = drawOlhos(e, corOlhos);
+        this.olhosTex[e] = t;
         this.texturas.push(t);
-        this.faces[e] = new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false });
       }
-      this.sprite = new THREE.Sprite(this.faces.neutro!);
-      this.sprite.scale.setScalar(0.5);
-      this.sprite.position.set(0, 0, 0.33);
-      this.cabecaGrp.add(this.sprite);
-    }
-
-    // capuz do juiz
-    if (opts.juiz) {
-      const capuz = new THREE.Mesh(
-        new THREE.ConeGeometry(0.4, 0.6, 6),
-        new THREE.MeshLambertMaterial({ color: INK, flatShading: true })
+      this.olhos = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.42, 0.18),
+        new THREE.MeshBasicMaterial({
+          map: this.olhosTex.neutro,
+          transparent: true,
+          depthWrite: false,
+        })
       );
-      capuz.position.y = 0.42;
-      capuz.rotation.y = 0.4;
-      capuz.castShadow = true;
-      this.cabecaGrp.add(capuz);
+      this.olhos.position.set(0, 1.24, 0.33);
+      this.olhos.rotation.x = -0.06;
+      this.corpo.add(this.olhos);
     }
 
-    // crachá torto no peito
+    // crachá torto preso na túnica — a seita bate ponto
     const tc = drawCracha(nome);
     this.texturas.push(tc);
     const cracha = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.42, 0.24),
+      new THREE.PlaneGeometry(0.44, 0.26),
       new THREE.MeshLambertMaterial({ map: tc })
     );
-    cracha.position.set(0.14, 0.62, 0.5);
-    cracha.rotation.x = -0.12;
-    cracha.rotation.z = -0.08;
+    cracha.position.set(0.16, 0.72, 0.56);
+    cracha.rotation.x = -0.22;
+    cracha.rotation.z = -0.1;
+    this.corpo.add(cracha);
 
-    // plaqueta do manequim
     if (this.manequim) {
       const tp = drawPlaqueta(nome);
       this.texturas.push(tp);
       const plaq = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.55, 0.3),
+        new THREE.PlaneGeometry(0.6, 0.34),
         new THREE.MeshLambertMaterial({ map: tp })
       );
-      plaq.position.set(0, 0.5, 0.56);
-      plaq.rotation.z = 0.1;
-      this.group.add(plaq);
+      plaq.position.set(0, 0.55, 0.62);
+      plaq.rotation.x = -0.24;
+      plaq.rotation.z = 0.08;
+      this.corpo.add(plaq);
     }
 
-    // mãos-luva flutuantes, repousando na beirada da mesa
+    this.group.add(this.corpo);
+
+    // mãos-luva flutuantes repousando na beirada da mesa (Rayman de seita)
     if (!this.manequim) {
       const matMao = new THREE.MeshLambertMaterial({ color: '#e9e5db', flatShading: true });
       for (const lado of [-1, 1]) {
-        const mao = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.14, 0.24), matMao);
-        mao.position.set(0.5 * lado, 0.28, 0.85);
-        mao.castShadow = true;
-        this.maos.push(mao);
+        const mao = new THREE.Group();
+        const palma = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 0.28), matMao);
+        const polegar = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.12), matMao);
+        polegar.position.set(0.13 * lado, 0.01, -0.04);
+        palma.castShadow = true;
+        mao.add(palma, polegar);
+        mao.position.set(0.52 * lado, 0.28, 0.88);
+        this.maos.push(palma);
         this.group.add(mao);
       }
     }
 
-    // cadeira (a do juiz tem encosto de trono)
+    // cadeira (trono de encosto alto pro juiz)
     const matCadeira = new THREE.MeshLambertMaterial({ color: 0x1b1a20 });
     const assento = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.1, 0.95), matCadeira);
     assento.position.set(0, -0.3, -0.1);
     const encosto = new THREE.Mesh(
-      new THREE.BoxGeometry(1.05, opts.juiz ? 2.3 : 1.5, 0.1),
+      new THREE.BoxGeometry(1.05, opts.juiz ? 2.6 : 1.6, 0.1),
       matCadeira
     );
-    encosto.position.set(0, opts.juiz ? 0.85 : 0.45, -0.6);
+    encosto.position.set(0, opts.juiz ? 1.0 : 0.5, -0.62);
     encosto.castShadow = true;
-
-    this.group.add(this.tronco, this.cabecaGrp, cracha, assento, encosto);
+    this.group.add(assento, encosto);
   }
 
   setExpressao(e: Expressao) {
     this.expressao = e;
-    if (this.sprite && this.faces[e]) this.sprite.material = this.faces[e]!;
+    if (this.olhos && this.olhosTex[e]) {
+      (this.olhos.material as THREE.MeshBasicMaterial).map = this.olhosTex[e]!;
+      (this.olhos.material as THREE.MeshBasicMaterial).needsUpdate = true;
+    }
   }
 
   /** Mão desce num soco seco na mesa (≤300ms, regra do caos). */
@@ -237,11 +256,10 @@ export class Reu {
   }
 
   tick(t: number, dt: number) {
-    // respiração dessincronizada + cabeça balançando de leve
-    const resp = Math.sin(t * 1.4 + this.fase);
-    this.tronco.scale.y = 1 + resp * 0.015;
-    this.cabecaGrp.position.y = 1.28 + resp * 0.02;
-    this.cabecaGrp.rotation.z = Math.sin(t * 0.5 + this.fase) * 0.05;
+    // respiração: o corpo inteiro sobe/desce e o capuz oscila — sem esticar malha
+    const resp = Math.sin(t * 1.3 + this.fase);
+    this.corpo.position.y = resp * 0.025;
+    this.corpo.rotation.z = Math.sin(t * 0.45 + this.fase) * 0.035;
     if (this.manequim) return;
 
     const hover = 0.28;
@@ -249,20 +267,19 @@ export class Reu {
       this.slamT += dt / 0.3;
       const k = Math.min(this.slamT, 1);
       const soco = Math.sin(k * Math.PI);
-      for (const m of this.maos) m.position.y = hover - soco * 0.24;
-      this.tronco.rotation.x = soco * 0.18;
+      for (const m of this.maos) m.parent!.position.y = hover - soco * 0.24;
+      this.corpo.rotation.x = soco * 0.14;
       if (k >= 1) {
         this.slamT = -1;
-        this.tronco.rotation.x = 0;
+        this.corpo.rotation.x = 0;
       }
     } else {
-      this.maos[0].position.y = hover + Math.sin(t * 2.1 + this.fase) * 0.03;
-      this.maos[1].position.y = hover + Math.cos(t * 1.8 + this.fase) * 0.03;
+      this.maos[0].parent!.position.y = hover + Math.sin(t * 2.1 + this.fase) * 0.03;
+      this.maos[1].parent!.position.y = hover + Math.cos(t * 1.8 + this.fase) * 0.03;
     }
   }
 
   dispose() {
     for (const t of this.texturas) t.dispose();
-    for (const f of Object.values(this.faces)) f?.dispose();
   }
 }
