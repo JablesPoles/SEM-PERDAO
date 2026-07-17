@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f2efe9;
+  --foreground: #17161a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-display: var(--font-archivo-black);
+  --font-sans: var(--font-archivo);
+
+  /* Brutal minimal — "Sem Perdão" (Claude Design, opção 1c) */
+  --color-ink: #17161a;
+  --color-paper: #f2efe9;
+  --color-card: #ffffff;
+  --color-panel: #26252b;
+  --color-red: #ff3b2f;
+  --color-gray: #6b6a72;
+  --color-line: #d8d4cb;
+  --color-ok: #2f9e5b;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-archivo), system-ui, sans-serif;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* Telas claras (home, criar, lobby) — creme com vinheta sutil */
+.lobby-bg {
+  background:
+    radial-gradient(120% 90% at 50% 0%, #faf8f3 0%, #f2efe9 55%, #e9e5db 100%);
+}
+
+/* Mesa de jogo — o bloco preto do design */
+.table-bg {
+  background:
+    radial-gradient(130% 100% at 50% 20%, #211f26 0%, #17161a 60%, #100f13 100%);
+}
+
+/* Botão primário vermelho — "CONDENAR VENCEDOR" */
+.btn-red {
+  background: #ff3b2f;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(255, 59, 47, 0.3);
+}
+
+/* Botão preto sobre fundo claro */
+.btn-ink {
+  background: #17161a;
+  color: #f2efe9;
+}
+
+/* Carta preta (pergunta) */
+.card-black {
+  background: #17161a;
+  color: #f2efe9;
+  box-shadow: 0 24px 40px -22px rgba(23, 22, 26, 0.6);
+}
+
+/* Carta branca (resposta) */
+.card-white {
+  background: #ffffff;
+  color: #17161a;
+  border: 2px solid #17161a;
+  box-shadow: 0 12px 24px -14px rgba(23, 22, 26, 0.35);
+}
+
+/* Título display */
+.font-display {
+  font-family: var(--font-archivo-black), sans-serif;
+  letter-spacing: -0.03em;
+}
