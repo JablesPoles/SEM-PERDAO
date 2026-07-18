@@ -2,7 +2,7 @@
 import { use, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMultiplayer } from '../../../hooks/useMultiplayer';
-import { MIN_PLAYERS, DEFAULT_SCORE_LIMIT } from '../../../lib/game';
+import { DEFAULT_SCORE_LIMIT, MAX_PLAYERS, MIN_PLAYERS } from '../../../lib/game';
 import { GameBoard } from '../../../components/GameBoard';
 import { ChatPanel } from '../../../components/ChatPanel';
 import { CustomDeckEditor } from '../../../components/CustomDeckEditor';
@@ -447,8 +447,11 @@ export default function SalaPage({ params }: PageProps) {
 
   // Lobby
   const roomUrl = typeof window !== 'undefined' ? `${window.location.origin}/sala/${roomCode}` : '';
-  const hasEnoughPlayers = mp.lobbyPlayers.length >= MIN_PLAYERS;
-  const canStart = hasEnoughPlayers;
+  const playerCount = mp.lobbyPlayers.length;
+  const hasEnoughPlayers = playerCount >= MIN_PLAYERS;
+  const isAtCapacity = playerCount >= MAX_PLAYERS;
+  const isOverCapacity = playerCount > MAX_PLAYERS;
+  const canStart = hasEnoughPlayers && !isOverCapacity;
   const bots = mp.lobbyPlayers.filter((p) => p.isBot);
 
   return (
@@ -483,7 +486,7 @@ export default function SalaPage({ params }: PageProps) {
             <div className="flex justify-between items-baseline px-1">
               <span className="text-ink/55 text-[11px] font-bold tracking-[2px]">NA MESA</span>
               <span className="text-ink/55 text-xs font-medium">
-                {mp.lobbyPlayers.length} jogador{mp.lobbyPlayers.length > 1 ? 'es' : ''}
+                {playerCount}/{MAX_PLAYERS} jogador{playerCount > 1 ? 'es' : ''}
               </span>
             </div>
             {mp.lobbyPlayers.map((p) => (
@@ -525,13 +528,27 @@ export default function SalaPage({ params }: PageProps) {
                 <span className="text-ink/40 text-[13.5px] italic font-medium">esperando a galera entrar…</span>
               </div>
             )}
-            {isHost && bots.length < 3 && (
+            {isHost && bots.length < 3 && !isAtCapacity && (
               <button
                 onClick={mp.addBot}
                 className="h-11 rounded-[14px] border-2 border-dashed border-ink/30 text-ink/60 hover:text-ink hover:border-ink font-bold text-[13px] transition-all active:scale-[0.98]"
               >
                 + Adicionar bot
               </button>
+            )}
+            {isHost && isAtCapacity && (
+              <p
+                role={isOverCapacity ? 'alert' : 'status'}
+                className={`rounded-[14px] border-2 px-3.5 py-3 text-center text-[12.5px] font-bold ${
+                  isOverCapacity
+                    ? 'border-red/60 bg-red/10 text-red'
+                    : 'border-ink/20 bg-ink/5 text-ink/60'
+                }`}
+              >
+                {isOverCapacity
+                  ? `Snapshot antigo com ${playerCount} lugares — remova ${playerCount - MAX_PLAYERS} antes de começar.`
+                  : 'Mesa completa — os 8 lugares estão ocupados.'}
+              </p>
             )}
             {isHost && (
               <button
@@ -619,13 +636,19 @@ export default function SalaPage({ params }: PageProps) {
                   className="btn-red h-13 rounded-xl font-display text-[15px] tracking-wide transition-all hover:brightness-110 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {canStart
-                    ? `COMEÇAR COM ${mp.lobbyPlayers.length} JOGADORES`
-                    : `FALTA${MIN_PLAYERS - mp.lobbyPlayers.length > 1 ? 'M' : ''} ${MIN_PLAYERS - mp.lobbyPlayers.length} PRA COMEÇAR`}
+                    ? `COMEÇAR COM ${playerCount} JOGADORES`
+                    : isOverCapacity
+                      ? `REMOVA ${playerCount - MAX_PLAYERS} PRA COMEÇAR`
+                      : `FALTA${MIN_PLAYERS - playerCount > 1 ? 'M' : ''} ${MIN_PLAYERS - playerCount} PRA COMEÇAR`}
                 </button>
                 <p className="text-center text-ink/45 text-xs font-medium">
-                  {hasEnoughPlayers
-                    ? 'pode começar agora ou esperar mais gente'
-                    : 'compartilhe o código ou complete com bots — mínimo 3'}
+                  {isOverCapacity
+                    ? `o limite atual é ${MAX_PLAYERS}; remova os lugares extras desse snapshot legado`
+                    : isAtCapacity
+                      ? 'mesa cheia — pode abrir o julgamento agora'
+                      : hasEnoughPlayers
+                        ? 'pode começar agora ou esperar mais gente'
+                        : 'compartilhe o código ou complete com bots — mínimo 3'}
                 </p>
               </>
             )}

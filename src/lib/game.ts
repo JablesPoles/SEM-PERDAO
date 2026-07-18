@@ -4,6 +4,7 @@ import { BlackCard, GameMode, GameState, Player, WhiteCard } from './types';
 
 export const HAND_SIZE = 10;
 export const MIN_PLAYERS = 3;
+export const MAX_PLAYERS = 8;
 export const DEFAULT_SCORE_LIMIT = 7;
 // Relógio da mesa: quem não jogar/julgar até o fim do tempo joga aleatório,
 // pra um AFK nunca travar a rodada.
@@ -21,6 +22,12 @@ export function shuffle<T>(arr: T[]): T[] {
 
 export function getActivePlayers(players: Player[]): Player[] {
   return players.filter((p) => !p.eliminated);
+}
+
+export function hasAvailableSeat(currentPlayerCount: number): boolean {
+  return Number.isInteger(currentPlayerCount)
+    && currentPlayerCount >= 0
+    && currentPlayerCount < MAX_PLAYERS;
 }
 
 // Snapshots anteriores ao modo Democracia não têm `mode` em runtime.
@@ -106,7 +113,9 @@ export function initGame(
   const custom = sanitizeCustomCards({ black: customBlack, white: customWhite });
   const blackPool = [...ALL_BLACK, ...custom.black];
   const whitePool = [...ALL_WHITE, ...custom.white];
-  const players: Player[] = seats.map((s) => ({
+  // A regra pura também protege a geometria e o protocolo caso um snapshot
+  // antigo ou duas entradas concorrentes escapem da validação do lobby.
+  const players: Player[] = seats.slice(0, MAX_PLAYERS).map((s) => ({
     id: s.id,
     name: s.name,
     isHuman: s.isHuman,
@@ -291,6 +300,15 @@ export function advanceToNextRound(gs: GameState): GameState {
   return drawBlack(refillHands(next));
 }
 
+// A mensagem `next_round` vem da rede. Só humanos ativos e conectados podem
+// votar pelo avanço, e apenas depois de a rodada realmente terminar.
+export function canRequestNextRound(gs: GameState, playerId: number): boolean {
+  if (gs.phase !== 'round-end') return false;
+  return getActivePlayers(gs.players).some(
+    (player) => player.id === playerId && player.isHuman && player.connected !== false
+  );
+}
+
 // Devolve as cartas jogadas às mãos dos donos (rodada abortada e recomeçada,
 // então o relógio da fase também reinicia).
 function returnSubmissions(gs: GameState): GameState {
@@ -391,8 +409,15 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
 
 // Convidados aprovados no meio do jogo sentam entre uma rodada e outra.
 export function seatNewcomers(gs: GameState, seats: { id: number; name: string }[]): GameState {
+  const available = Math.max(0, MAX_PLAYERS - getActivePlayers(gs.players).length);
+  const occupiedIds = new Set(gs.players.map((player) => player.id));
   const fresh: Player[] = seats
-    .filter((s) => !gs.players.some((p) => p.id === s.id))
+    .filter((seat) => {
+      if (occupiedIds.has(seat.id)) return false;
+      occupiedIds.add(seat.id);
+      return true;
+    })
+    .slice(0, available)
     .map((s) => ({
       id: s.id,
       name: s.name,

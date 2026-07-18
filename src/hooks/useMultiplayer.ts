@@ -9,10 +9,13 @@ import {
   applyReveal,
   applySubmission,
   applyVote,
+  canRequestNextRound,
   getActivePlayers,
   getGameMode,
+  hasAvailableSeat,
   initGame,
   JUDGE_SECONDS,
+  MAX_PLAYERS,
   MIN_PLAYERS,
   pendingSubmitters,
   pendingVoters,
@@ -337,6 +340,7 @@ export function useMultiplayer(
       if (action.phaseStartedAt !== gs.phaseStartedAt) return;
       gs = applyVote(gs, fromPlayerId, action.index);
     } else if (action.type === 'next_round') {
+      if (!canRequestNextRound(gs, fromPlayerId)) return;
       pendingNextRoundRef.current.add(fromPlayerId);
       const activeHumans = getActivePlayers(gs.players).filter(
         (p) => p.isHuman && p.connected !== false
@@ -673,6 +677,13 @@ export function useMultiplayer(
             }
             send('welcome', { clientId: joinerId, playerId: seat.id });
             if (hostGameRef.current) broadcastState(hostGameRef.current);
+            return;
+          }
+
+          // Reconexões recuperam o próprio assento acima; uma pessoa nova não
+          // pode criar o nono lugar, nem no lobby nem esperando a próxima rodada.
+          if (!hasAvailableSeat(lobbyPlayersRef.current.length)) {
+            send('join_rejected', { clientId: joinerId, reason: 'room_full' });
             return;
           }
 
@@ -1029,6 +1040,7 @@ export function useMultiplayer(
   // Bots existem só no lobby do host; entram no jogo como assentos normais.
   const addBot = useCallback(() => {
     if (!isHost) return;
+    if (!hasAvailableSeat(lobbyPlayersRef.current.length)) return;
     const bots = lobbyPlayersRef.current.filter((p) => p.isBot);
     if (bots.length >= BOT_NAMES.length) return;
     const name = BOT_NAMES.find(
@@ -1056,7 +1068,7 @@ export function useMultiplayer(
   const startGame = useCallback((scoreLimit: number, mode: GameMode) => {
     if (!isHost) return;
     const lobby = lobbyPlayersRef.current;
-    if (lobby.length < MIN_PLAYERS) return;
+    if (lobby.length < MIN_PLAYERS || lobby.length > MAX_PLAYERS) return;
 
     const seats: Seat[] = lobby.map((lp) => ({
       id: lp.id,
@@ -1092,6 +1104,11 @@ export function useMultiplayer(
     if (!isHost) return;
     const pending = pendingJoinsRef.current.find((p) => p.clientId === joinerClientId);
     if (!pending) return;
+    if (!hasAvailableSeat(lobbyPlayersRef.current.length)) {
+      send('join_rejected', { clientId: joinerClientId, reason: 'room_full' });
+      setPendingJoins((prev) => prev.filter((p) => p.clientId !== joinerClientId));
+      return;
+    }
 
     const playerId = nextPlayerIdRef.current++;
     clientPlayerMapRef.current.set(joinerClientId, playerId);

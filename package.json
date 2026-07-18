@@ -6,7 +6,10 @@
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npm run test:game-guards && npm run test:mesa-view",
+    "test:game-guards": "playwright test tests/game-guards.spec.ts",
+    "test:mesa-view": "node --test src/lib/three/mesaView.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.3",
