@@ -40,6 +40,34 @@ const CARD_T = 0.015; // espessura — cartas são caixas finas pra ter borda ch
 
 export type Reacao3D = 'tomate' | 'sapato' | 'rosa';
 
+/**
+ * Atos de câmera — cortes SECOS (sem tween), linguagem de filme barato.
+ * `pov` é a cadeira vazia do azimute 0°: você sentado à mesa, sendo julgado.
+ */
+export type Ato = 'mesa' | 'pov' | 'provas' | 'juiz' | 'cima';
+export const ATOS: Ato[] = ['mesa', 'pov', 'provas', 'juiz', 'cima'];
+
+interface ConfigAto {
+  pos: [number, number, number];
+  alvo: [number, number, number];
+  dist: [number, number];
+  polar: [number, number];
+}
+
+const CONFIG_ATO: Record<Ato, ConfigAto> = {
+  // enquadramento de laboratório: a mesa inteira
+  mesa: { pos: [0, 4.35, 8.6], alvo: [0, 0.45, 0.25], dist: [4.5, 13], polar: [Math.PI / 5, Math.PI / 2.15] },
+  // primeira pessoa sentado na cadeira vazia (destino final do jogo);
+  // um pouco acima do olhar real pra mão em leque virar faixa inferior, não muro
+  pov: { pos: [0, 2.0, 4.6], alvo: [0, 0.45, -0.6], dist: [2, 7], polar: [Math.PI / 3.2, Math.PI / 1.95] },
+  // close nas provas lacradas
+  provas: { pos: [0, 2.5, 3.6], alvo: [0, 0.05, 1.05], dist: [1.5, 9], polar: [Math.PI / 6, Math.PI / 2.1] },
+  // encarando o juiz de perto, do meio da mesa
+  juiz: { pos: [0, 1.7, -1.4], alvo: [0, 1.35, -5.15], dist: [2, 8], polar: [Math.PI / 4, Math.PI / 2.05] },
+  // plano zenital dramático
+  cima: { pos: [0, 9.2, 0.9], alvo: [0, 0, 0], dist: [5, 13], polar: [0.02, Math.PI / 2.3] },
+};
+
 // ── Fontes: recupera o nome real que o next/font registrou ────────────────────
 function fontFamily(displayVar: string, fallback: string): string {
   if (typeof document === 'undefined') return fallback;
@@ -259,6 +287,7 @@ export class RetroMesa {
   private marteloT = -1;
   private shake = 0;
   private raf = 0;
+  private atoAtual: Ato = 'mesa';
   private pixelSize: number;
   private disposed = false;
   private canvas: HTMLCanvasElement;
@@ -622,6 +651,27 @@ export class RetroMesa {
     this.baloesFala.push({ mesh, textura, t0: this.timer.getElapsed(), dur: 2.6 });
     autor.setExpressao('desprezo');
     somBalao();
+  }
+
+  /**
+   * Corte seco pro ato pedido: posiciona câmera e alvo na hora, sem tween
+   * (conceito §6 — cortes de filme barato dão o ritmo). A órbita continua
+   * disponível dentro dos limites do ato ("esticar o pescoço").
+   */
+  setAto(ato: Ato) {
+    this.atoAtual = ato;
+    const cfg = CONFIG_ATO[ato];
+    this.camera.position.set(...cfg.pos);
+    this.controls.target.set(...cfg.alvo);
+    this.controls.minDistance = cfg.dist[0];
+    this.controls.maxDistance = cfg.dist[1];
+    this.controls.minPolarAngle = cfg.polar[0];
+    this.controls.maxPolarAngle = cfg.polar[1];
+    this.controls.update();
+  }
+
+  getAto(): Ato {
+    return this.atoAtual;
   }
 
   /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake incluso. */

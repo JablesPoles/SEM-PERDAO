@@ -7,8 +7,16 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ALL_BLACK, ALL_WHITE } from '@/lib/cards';
 import { isMuted, setMuted } from '@/lib/sounds';
-import type { Reacao3D, RetroMesa } from '@/lib/three/retroMesa';
+import { ATOS, type Ato, type Reacao3D, type RetroMesa } from '@/lib/three/retroMesa';
 import { EXPRESSOES, ACOES, type Expressao, type Acao } from '@/lib/three/reus';
+
+const ROTULO_ATO: Record<Ato, string> = {
+  mesa: 'MESA',
+  pov: 'POV',
+  provas: 'PROVAS',
+  juiz: 'JUIZ',
+  cima: 'CIMA',
+};
 
 const PIXELS = [1, 2, 3];
 const REACOES: { tipo: Reacao3D; rotulo: string }[] = [
@@ -41,6 +49,7 @@ export default function Mesa3D() {
   const [pixel, setPixel] = useState(2);
   const [pronto, setPronto] = useState(false);
   const [somMudo, setSomMudo] = useState(false);
+  const [ato, setAto] = useState<Ato>('mesa');
 
   useEffect(() => {
     let viva = true;
@@ -73,6 +82,11 @@ export default function Mesa3D() {
   const trocarPixel = (p: number) => {
     setPixel(p);
     cenaRef.current?.setPixelSize(p);
+  };
+
+  const trocarAto = (a: Ato) => {
+    setAto(a);
+    cenaRef.current?.setAto(a);
   };
 
   const trocarSom = () => {
@@ -108,6 +122,24 @@ export default function Mesa3D() {
         </div>
 
         <div className="pointer-events-auto flex items-end gap-4">
+          <div className="flex flex-col items-end gap-2">
+            <span className="text-paper/50 text-[10px] font-bold tracking-widest uppercase">câmera</span>
+            <div className="flex gap-1.5">
+              {ATOS.map((a) => (
+                <button
+                  key={a}
+                  onClick={() => trocarAto(a)}
+                  className={`h-9 px-2.5 rounded-lg font-bold text-[10px] tracking-wider transition-all active:scale-90 ${
+                    ato === a
+                      ? 'btn-red'
+                      : 'bg-white/5 text-paper/70 border border-white/15 hover:bg-white/10'
+                  }`}
+                >
+                  {ROTULO_ATO[a]}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="flex flex-col items-end gap-2">
             <span className="text-paper/50 text-[10px] font-bold tracking-widest uppercase">som</span>
             <button

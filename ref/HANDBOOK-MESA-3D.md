@@ -125,13 +125,15 @@ silêncio (ok).
   rosto recuado
 - [x] Crachás v2 externos com backing/lanyard + plaqueta exclusiva do manequim
 - [x] Protótipo de reações arremessadas (tomate/sapato/rosa) + balão pixelado
+- [x] Atos de câmera com corte seco (`setAto`): mesa, POV (cadeira vazia az 0°,
+  mão como faixa inferior), provas, juiz (close no breu, olhos vermelhos) e
+  cima; cada ato com limites próprios de órbita ("esticar o pescoço").
+  Botões CÂMERA no topo da página. Branch publicada no GitHub → preview Vercel.
 
 ### Agora (aguardando feedback do Poles)
-- [ ] Validar a calibração v4 e o ritmo/tamanho das reações após hard reload
+- [ ] Validar calibração v4, reações e os 5 atos de câmera (POV/JUIZ novos)
 
 ### Próximo (ordem do conceito §9)
-- [ ] Cortes de câmera por ato (mesa → provas → juiz → placar) + POV
-  primeira pessoa sentado (a cadeira vazia do azimute 0°)
 - [ ] Timer diegético: lâmpada pisca acelerando; migração de host = lâmpada
   pisca e estabiliza
 - [ ] Ato do veredito completo: spotlight vermelho no culpado + carimbo
