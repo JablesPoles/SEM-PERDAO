@@ -273,6 +273,92 @@ class Carta {
   }
 }
 
+/**
+ * A lousa do placar: giz sobre quadro quase preto. Tracinhos em grupos de 5;
+ * acima de 18 pontos vira número pra não estourar a linha. O líder ganha um
+ * sublinhado vermelho — é quem está mais perto da sentença final.
+ */
+function drawLousa(
+  linhas: { nome: string; score: number; lider: boolean; juiz: boolean }[],
+  meta: number
+): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 384;
+  const x = c.getContext('2d')!;
+  x.fillStyle = '#202024';
+  x.fillRect(0, 0, 512, 384);
+  // poeira de giz
+  for (let i = 0; i < 480; i++) {
+    x.fillStyle = `rgba(242,239,233,${(Math.random() * 0.05).toFixed(3)})`;
+    x.fillRect(Math.floor(Math.random() * 512), Math.floor(Math.random() * 384), 2, 2);
+  }
+  const display = fontFamily('--font-archivo-black', 'sans-serif');
+  x.fillStyle = 'rgba(242,239,233,0.92)';
+  x.font = `700 34px ${display}`;
+  x.textBaseline = 'top';
+  x.fillText('PLACAR', 26, 16);
+  x.strokeStyle = 'rgba(242,239,233,0.55)';
+  x.lineWidth = 3;
+  x.beginPath();
+  x.moveTo(24, 58);
+  x.lineTo(206 + Math.random() * 10, 61);
+  x.stroke();
+  x.font = `700 19px ${display}`;
+  x.fillStyle = 'rgba(242,239,233,0.55)';
+  x.textAlign = 'right';
+  x.fillText(`META ${meta}`, 488, 24);
+  x.textAlign = 'left';
+
+  linhas.slice(0, 8).forEach((linha, i) => {
+    const y = 82 + i * 36;
+    const alpha = 0.76 + Math.random() * 0.16;
+    x.font = `700 21px ${display}`;
+    x.fillStyle = `rgba(242,239,233,${alpha})`;
+    const nome = (linha.juiz ? '› ' : '') + linha.nome.toLocaleUpperCase('pt-BR');
+    x.fillText(nome.slice(0, 13), 26, y);
+    const baseX = 246;
+    if (linha.score > 18) {
+      x.font = `700 26px ${display}`;
+      x.fillText(String(linha.score), baseX, y - 3);
+    } else {
+      x.strokeStyle = `rgba(242,239,233,${alpha})`;
+      x.lineWidth = 3;
+      for (let s = 0; s < linha.score; s++) {
+        const grupo = Math.floor(s / 5);
+        const dentro = s % 5;
+        const inicioGrupo = baseX + grupo * 66;
+        x.beginPath();
+        if (dentro === 4) {
+          // o quinto risco corta o grupo na diagonal
+          x.moveTo(inicioGrupo - 4, y + 20);
+          x.lineTo(inicioGrupo + 42, y - 2);
+        } else {
+          const gx = inicioGrupo + dentro * 12;
+          x.moveTo(gx + (Math.random() - 0.5) * 2, y - 2);
+          x.lineTo(gx + (Math.random() - 0.5) * 3, y + 21);
+        }
+        x.stroke();
+      }
+    }
+    if (linha.lider && linha.score > 0) {
+      x.strokeStyle = 'rgba(255,59,47,0.85)';
+      x.lineWidth = 4;
+      x.beginPath();
+      x.moveTo(24, y + 26);
+      x.lineTo(214, y + 28);
+      x.stroke();
+    }
+  });
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  return tex;
+}
+
 interface FlocoConfete {
   pos: THREE.Vector3;
   vel: THREE.Vector3;
@@ -348,6 +434,8 @@ export class RetroMesa {
     somTocado: boolean;
   } | null = null;
   private luzGeral = 1; // 1 = sala normal; ~0.1 = blackout da vitória
+  private lousa: { grupo: THREE.Group; quadro: THREE.Mesh; tex: THREE.CanvasTexture | null } | null = null;
+  private lousaSignature = '';
   private blinkAte = 0;
   private proximoCaos = 3;
   private martelo!: THREE.Group;
@@ -1160,11 +1248,70 @@ export class RetroMesa {
     // o ato final: game-end liga a festa fúnebre; qualquer outra fase desliga
     if (view.phase === 'game-end') this.iniciarVitoria(view);
     else this.encerrarVitoria();
+
+    this.atualizarLousa(view);
   }
 
   private setDeadline(endsAt: number, durationMs: number) {
     this.deadlineEndsAt = Number.isFinite(endsAt) ? endsAt : 0;
     this.deadlineDurationMs = Math.max(1, Number.isFinite(durationMs) ? durationMs : 1);
+  }
+
+  // ── A lousa do placar: UI dentro do mundo ──────────────────────────────────
+
+  /** Monta o cavalete uma vez, ao lado do juiz, virado pra mesa. */
+  private montarLousa() {
+    if (this.lousa) return;
+    const grupo = new THREE.Group();
+    const matMadeira = new THREE.MeshLambertMaterial({ color: 0x2e2126 });
+    const moldura = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1.86, 0.09), matMadeira);
+    moldura.castShadow = true;
+    const quadro = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.26, 1.62),
+      new THREE.MeshLambertMaterial({ color: 0xffffff })
+    );
+    quadro.position.z = 0.055;
+    const matPerna = new THREE.MeshLambertMaterial({ color: 0x241a1e });
+    for (const lado of [-1, 1]) {
+      const perna = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 2.6, 7), matPerna);
+      perna.position.set(1.05 * lado, -0.85, -0.12);
+      perna.rotation.z = -lado * 0.1;
+      perna.rotation.x = 0.08;
+      grupo.add(perna);
+    }
+    const pernaTras = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 2.5, 7), matPerna);
+    pernaTras.position.set(0, -0.9, -0.5);
+    pernaTras.rotation.x = -0.35;
+    grupo.add(moldura, quadro, pernaTras);
+    const az = (152 * Math.PI) / 180;
+    const r = 7.6;
+    grupo.position.set(Math.sin(az) * r, 1.72, Math.cos(az) * r);
+    grupo.lookAt(0, 1.35, 0);
+    this.scene.add(grupo);
+    this.lousa = { grupo, quadro, tex: null };
+  }
+
+  /** Redesenha o giz só quando nomes/pontos/meta mudam. */
+  private atualizarLousa(view: MesaView) {
+    this.montarLousa();
+    if (!this.lousa) return;
+    const linhas = [...view.seats]
+      .sort((a, b) => b.score - a.score)
+      .map((seat) => ({ nome: seat.name, score: seat.score, juiz: seat.id === view.judgeId }));
+    const topo = linhas[0]?.score ?? 0;
+    const assinatura =
+      `${view.scoreLimit}|` + linhas.map((l) => `${l.nome}:${l.score}:${l.juiz ? 1 : 0}`).join('|');
+    if (assinatura === this.lousaSignature) return;
+    this.lousaSignature = assinatura;
+    const tex = drawLousa(
+      linhas.map((l) => ({ ...l, lider: l.score === topo && topo > 0 })),
+      view.scoreLimit
+    );
+    const mat = this.lousa.quadro.material as THREE.MeshLambertMaterial;
+    this.lousa.tex?.dispose();
+    this.lousa.tex = tex;
+    mat.map = tex;
+    mat.needsUpdate = true;
   }
 
   // ── O ATO FINAL: blackout, um holofote só e confete preto/vermelho ─────────
@@ -1865,6 +2012,7 @@ export class RetroMesa {
     this.controls.dispose();
     this.timer.dispose();
     this.encerrarVitoria();
+    this.lousa?.tex?.dispose();
     pararAmbiente();
     for (const reacao of this.reacoesVoo) descartarObjeto(reacao.group);
     for (const balao of this.baloesFala) this.descartarBalao(balao);

@@ -219,7 +219,11 @@ silêncio (ok).
   persistência unificados em `lib/aparencia.ts` (mesma chave
   `sp-cultist-appearance` do useMultiplayer); nome persiste em session+local.
   Os minis do banco dos réus continuam CSS (baratos).
-- [ ] UI dentro do mundo (placar-lousa, crachás-nome, HUD 2D mínimo)
+- [x] UI dentro do mundo: **lousa do placar** em cavalete ao lado do juiz
+  (az 152°, r 7.6) — giz sobre quadro escuro, tracinhos em grupos de 5 (>18
+  vira número), `› ` marca o juiz, líder com sublinhado vermelho, META no
+  canto. Redesenha só quando nomes/pontos/meta mudam (assinatura). Crachás
+  3D já cumprem o papel de nome; o HUD 2D mínimo é o do Tribunal3DGame.
 
 ## Armadilhas conhecidas
 
