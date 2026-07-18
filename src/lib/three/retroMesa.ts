@@ -62,7 +62,7 @@ const CONFIG_ATO: Record<Ato, ConfigAto> = {
   // PRIMEIRA PESSOA de verdade: olho na altura da cabeça de quem senta na
   // cadeira vazia (az 0°), mirando o juiz do outro lado. FOV mais aberto
   // pra mesa + réus caberem; a mão em leque entra por baixo do quadro.
-  pov: { pos: [0, 1.5, 5.0], alvo: [0, 1.0, -3.5], dist: [3, 10], polar: [Math.PI / 2.6, Math.PI / 1.9], fov: 58 },
+  pov: { pos: [0, 1.5, 5.0], alvo: [0, 1.0, -3.5], dist: [3, 10], polar: [0.38, Math.PI - 0.38], fov: 58 },
   // close nas provas lacradas
   provas: { pos: [0, 2.5, 3.6], alvo: [0, 0.05, 1.05], dist: [1.5, 9], polar: [Math.PI / 6, Math.PI / 2.1], fov: 50 },
   // encarando o juiz de perto, do meio da mesa
@@ -306,6 +306,7 @@ export class RetroMesa {
   private reacoesVoo: ReacaoVoo[] = [];
   private baloesFala: BalaoFala[] = [];
   private pendulo!: THREE.Group;
+  private lampadaVisual!: THREE.Group;
   private spot!: THREE.SpotLight;
   private brilho!: THREE.PointLight;
   private bulbo!: THREE.Mesh;
@@ -328,6 +329,8 @@ export class RetroMesa {
   private onCulpadoCb: ((nome: string) => void) | null = null;
   private raf = 0;
   private atoAtual: Ato = 'mesa';
+  private povAnchor = new THREE.Vector3(...CONFIG_ATO.pov.pos);
+  private povDirection = new THREE.Vector3();
   private pixelSize: number;
   private disposed = false;
   private canvas: HTMLCanvasElement;
@@ -378,8 +381,8 @@ export class RetroMesa {
       uniforms: {
         tDiffuse: { value: this.rt.texture },
         tBayer: { value: this.criarBayer() },
-        uLevels: { value: 8.0 },
-        uDither: { value: 0.58 },
+        uLevels: { value: 12.0 },
+        uDither: { value: 0.3 },
         uPixel: { value: this.pixelSize },
         uTime: { value: 0 },
       },
@@ -399,13 +402,13 @@ export class RetroMesa {
           // ── vidro do tubo: curvatura de barril ──
           vec2 d = vUv - 0.5;
           float r2 = dot(d, d);
-          vec2 uv = 0.5 + d * (1.0 + 0.11 * r2);
+          vec2 uv = 0.5 + d * (1.0 + 0.055 * r2);
           if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
             gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
             return;
           }
           // aberração cromática crescendo pra borda
-          vec2 ca = d * r2 * 0.022;
+          vec2 ca = d * r2 * 0.009;
           vec3 c;
           c.r = texture2D(tDiffuse, uv + ca).r;
           c.g = texture2D(tDiffuse, uv).g;
@@ -415,26 +418,26 @@ export class RetroMesa {
           c += limiar * (uDither / uLevels);
           c = floor(c * uLevels + 0.5) / uLevels;
           // fósforo nunca apaga: levanta os pretos (o escuro fica VISÍVEL)
-          c = c * 0.92 + vec3(0.08);
+          c = c * 0.95 + vec3(0.05);
           // máscara RGB sutil (grade de fósforo) por coluna de pixelão
           float m = mod(floor(gl_FragCoord.x / uPixel), 3.0);
-          c *= vec3(0.985) + 0.03 * vec3(
+          c *= vec3(0.992) + 0.016 * vec3(
             m == 0.0 ? 1.0 : 0.0,
             m == 1.0 ? 1.0 : 0.0,
             m == 2.0 ? 1.0 : 0.0
           );
           // scanlines alinhadas ao pixelão
           float linha = mod(floor(gl_FragCoord.y / uPixel), 2.0);
-          c *= 1.0 - 0.055 * linha;
-          // vinheta pesada nos cantos — o sinistro mora na borda
+          c *= 1.0 - 0.028 * linha;
+          // vinheta presente, mas sem engolir a leitura nos assentos laterais
           float vig = smoothstep(0.85, 0.3, length(d) * 1.25);
-          c *= 0.8 + 0.2 * vig;
+          c *= 0.9 + 0.1 * vig;
           // grão animado
           float g = fract(sin(dot(gl_FragCoord.xy + mod(uTime, 10.0) * 137.0, vec2(12.9898, 78.233))) * 43758.5453);
-          c += (g - 0.5) * 0.025;
+          c += (g - 0.5) * 0.012;
           // faixa rolando + tremidinha de sinal fraco
-          c *= 1.0 + 0.02 * sin(uv.y * 9.42 - uTime * 1.1);
-          c *= 1.0 + 0.008 * sin(uTime * 84.0);
+          c *= 1.0 + 0.009 * sin(uv.y * 9.42 - uTime * 1.1);
+          c *= 1.0 + 0.003 * sin(uTime * 84.0);
           // cantos arredondados do vidro
           vec2 q = abs(d) * 2.0;
           c *= smoothstep(1.03, 0.95, max(q.x, q.y) + 0.14 * min(q.x, q.y));
@@ -551,6 +554,7 @@ export class RetroMesa {
   /** A lâmpada pendurada — a personagem-narradora do porão (conceito §2.2). */
   private montarLampada() {
     this.pendulo = new THREE.Group();
+    this.lampadaVisual = new THREE.Group();
     this.pendulo.position.set(0, 8.2, 0);
     const fio = new THREE.Mesh(
       new THREE.CylinderGeometry(0.02, 0.02, 4.2, 5),
@@ -576,7 +580,10 @@ export class RetroMesa {
     this.spot.target.position.set(0, -8.2, 0); // aponta reto pra baixo e acompanha o balanço
     this.brilho = new THREE.PointLight(0xffe9c4, 10, 9, 2);
     this.brilho.position.y = -4.3;
-    this.pendulo.add(fio, cupula, this.bulbo, this.spot, this.spot.target, this.brilho);
+    // O casco pode sumir no plano zenital sem apagar as luzes que dão volume
+    // à mesa. Nos demais atos ele volta exatamente ao mesmo pêndulo.
+    this.lampadaVisual.add(fio, cupula, this.bulbo);
+    this.pendulo.add(this.lampadaVisual, this.spot, this.spot.target, this.brilho);
     this.scene.add(this.pendulo);
   }
 
@@ -674,15 +681,26 @@ export class RetroMesa {
     somArremesso();
   }
 
-  /** Balão billboard curto sobre um réu — primeiro passo do chat dentro do mundo. */
-  testarFala() {
-    const falas = ['EU EXIJO JUSTIÇA!', 'ISSO É CALÚNIA.', 'CULPA DO ESTAGIÁRIO.', 'OBJEÇÃO, PORRA!'];
-    const vivos = this.reus.filter((r) => !r.manequim);
-    // No laboratório, o juiz do fundo mantém o balão sempre dentro da câmera.
-    // Na integração real, o autor virá do evento de chat.
-    const autor = vivos[0];
-    if (!autor) return;
-    const textura = this.criarTexturaBalao(falas[Math.floor(Math.random() * falas.length)]);
+  /**
+   * Balão billboard de chat sobre um participante. Funciona também no POV:
+   * a fala acompanha a rotação da câmera e não depende da UI da página.
+   */
+  mostrarFala(nomeAutor: string, texto: string, duracao = 2.6): boolean {
+    const autor = this.reus.find((r) => r.nome === nomeAutor);
+    const vemDaCadeiraPov = nomeAutor === 'VOCÊ';
+    const fala = texto.trim();
+    if ((!autor && !vemDaCadeiraPov) || !fala) return false;
+    // O próprio assento fica colado ao near plane desta câmera. No POV a
+    // página já desenha a fala na lente; criar um plano aqui cobriria a sala.
+    if (vemDaCadeiraPov && this.atoAtual === 'pov') return false;
+
+    // Evita que uma rajada de chat acumule planos/texturas até o GC alcançar.
+    if (this.baloesFala.length >= 6) {
+      const antigo = this.baloesFala.shift();
+      if (antigo) this.descartarBalao(antigo);
+    }
+
+    const textura = this.criarTexturaBalao(fala);
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.95), new THREE.MeshBasicMaterial({
       map: textura,
       transparent: true,
@@ -691,15 +709,52 @@ export class RetroMesa {
       fog: false,
       side: THREE.DoubleSide,
     }));
-    mesh.position.copy(autor.group.position).multiplyScalar(0.78);
-    // Baixo o bastante para não cortar no topo mesmo nos assentos do fundo.
-    mesh.position.y = 2.5;
+    if (autor) {
+      mesh.position.copy(autor.group.position).multiplyScalar(0.78);
+      // Baixo o bastante para não cortar no topo mesmo nos assentos do fundo.
+      mesh.position.y = 2.5;
+    } else {
+      // A câmera ocupa o oitavo assento. Em planos externos, a fala aparece
+      // sobre essa cadeira; no POV a UI 2D mantém a própria mensagem legível.
+      mesh.position.set(0, 2.0, 4.0);
+    }
     mesh.quaternion.copy(this.camera.quaternion);
     mesh.renderOrder = 20;
     this.scene.add(mesh);
-    this.baloesFala.push({ mesh, textura, t0: this.timer.getElapsed(), dur: 2.6 });
-    autor.setExpressao('desprezo');
+    this.baloesFala.push({
+      mesh,
+      textura,
+      t0: this.timer.getElapsed(),
+      dur: Math.min(8, Math.max(1, duracao)),
+    });
+    autor?.setExpressao('desprezo');
     somBalao();
+    return true;
+  }
+
+  /** Nome curto usado pela ponte de chat da partida real. */
+  falar(nomeAutor: string, texto: string, duracao = 2.6): boolean {
+    return this.mostrarFala(nomeAutor, texto, duracao);
+  }
+
+  /**
+   * Reação efêmera sobre o autor, usando o mesmo billboard e ciclo de vida
+   * das falas. Mantém emojis fora do DOM e visíveis durante POV/julgamento.
+   */
+  reagir(nomeAutor: string, emoji: string, duracao = 1.8): boolean {
+    const exibiu = this.mostrarFala(nomeAutor, emoji, duracao);
+    if (!exibiu) return false;
+    const autor = this.reus.find((r) => r.nome === nomeAutor);
+    autor?.setExpressao(/[😂🤣😆❤️🌹]/u.test(emoji) ? 'riso' : 'choque');
+    return true;
+  }
+
+  /** Balão de laboratório; usa a mesma API que receberá o chat real. */
+  testarFala() {
+    const falas = ['EU EXIJO JUSTIÇA!', 'ISSO É CALÚNIA.', 'CULPA DO ESTAGIÁRIO.', 'OBJEÇÃO, PORRA!'];
+    const autor = this.reus.find((r) => !r.manequim);
+    if (!autor) return;
+    this.falar(autor.nome, falas[Math.floor(Math.random() * falas.length)]);
   }
 
   /**
@@ -712,12 +767,31 @@ export class RetroMesa {
     const cfg = CONFIG_ATO[ato];
     this.camera.position.set(...cfg.pos);
     this.controls.target.set(...cfg.alvo);
+    this.controls.enableZoom = ato !== 'pov';
+    this.controls.enablePan = false;
     this.controls.minDistance = cfg.dist[0];
     this.controls.maxDistance = cfg.dist[1];
     this.controls.minPolarAngle = cfg.polar[0];
     this.controls.maxPolarAngle = cfg.polar[1];
+    this.lampadaVisual.visible = ato !== 'cima';
+    if (ato === 'pov') this.povAnchor.copy(this.camera.position);
     this.aplicarFov();
     this.controls.update();
+    if (ato === 'pov') this.travarPovNaCadeira();
+  }
+
+  /**
+   * OrbitControls fornece uma rotação agradável e consistente para mouse e
+   * toque, mas normalmente move a câmera ao redor do alvo. No POV convertemos
+   * essa órbita em direção de olhar e recolocamos os olhos na cadeira a cada
+   * frame. Assim arrastar olha livremente sem caminhar, orbitar ou dar zoom.
+   */
+  private travarPovNaCadeira() {
+    const distanciaDoOlhar = Math.max(1, this.camera.position.distanceTo(this.controls.target));
+    this.povDirection.subVectors(this.controls.target, this.camera.position).normalize();
+    this.camera.position.copy(this.povAnchor);
+    this.controls.target.copy(this.povAnchor).addScaledVector(this.povDirection, distanciaDoOlhar);
+    this.camera.lookAt(this.controls.target);
   }
 
   /** FOV do ato atual, com abertura extra em tela estreita (celular em pé). */
@@ -771,7 +845,7 @@ export class RetroMesa {
 
   /**
    * O JULGAMENTO: revela as provas em sentido horário (a sua por último),
-   * uma a cada ~1.2s. `onRevela` alimenta a UI 2D com autor + resposta;
+   * uma a cada ~3.2s. `onRevela` alimenta a UI 2D com autor + resposta;
    * `onFim` avisa que o júri terminou de ler.
    */
   julgar(
@@ -1027,16 +1101,45 @@ export class RetroMesa {
     x.fill();
     x.stroke();
     x.fillStyle = '#f2efe9';
-    x.font = `700 22px ${fontFamily('--font-archivo-black', 'sans-serif')}`;
+    x.font = `700 19px ${fontFamily('--font-archivo-black', 'sans-serif')}`;
     x.textAlign = 'center';
     x.textBaseline = 'middle';
-    x.fillText(texto, 128, 51, 210);
+    const normalizado = texto.replace(/\s+/g, ' ').trim().slice(0, 72);
+    const palavras = normalizado.split(' ');
+    const linhas: string[] = [];
+    let linha = '';
+    for (const palavra of palavras) {
+      const candidata = linha ? `${linha} ${palavra}` : palavra;
+      if (x.measureText(candidata).width <= 205 || !linha) {
+        linha = candidata;
+      } else {
+        linhas.push(linha);
+        linha = palavra;
+      }
+      if (linhas.length === 2) break;
+    }
+    if (linha && linhas.length < 2) linhas.push(linha);
+    if (linhas.length === 2 && palavras.join(' ') !== linhas.join(' ')) {
+      while (linhas[1].length > 1 && x.measureText(`${linhas[1]}…`).width > 205) {
+        linhas[1] = linhas[1].slice(0, -1);
+      }
+      linhas[1] = `${linhas[1].trimEnd()}…`;
+    }
+    const yInicial = linhas.length === 1 ? 51 : 40;
+    linhas.forEach((conteudo, index) => x.fillText(conteudo, 128, yInicial + index * 24, 210));
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter;
     tex.generateMipmaps = false;
     return tex;
+  }
+
+  private descartarBalao(balao: BalaoFala) {
+    balao.mesh.removeFromParent();
+    balao.textura.dispose();
+    balao.mesh.geometry.dispose();
+    balao.mesh.material.dispose();
   }
 
   /** animação de entrada: cai do alto girando até a pose alvo */
@@ -1091,6 +1194,7 @@ export class RetroMesa {
     const t = this.timer.getElapsed();
 
     this.controls.update();
+    if (this.atoAtual === 'pov') this.travarPovNaCadeira();
 
     // lâmpada: balanço lento + zumbido elétrico + apagões de susto
     this.pendulo.rotation.z = Math.sin(t * 0.9) * 0.05;
@@ -1147,7 +1251,9 @@ export class RetroMesa {
         j.onRevela({ autor: c.autor, texto: c.texto });
         if (j.idx % 2 === 0) this.juizReu?.acao('apontar');
         j.idx++;
-        j.proximaT = t + 1.25;
+        // A primeira metade permanece na prova; a segunda abre espaço para o
+        // corte de reação/chat sem atropelar a leitura da carta seguinte.
+        j.proximaT = t + 3.2;
       } else {
         const fim = j.onFim;
         this.julgamento = null;
@@ -1161,10 +1267,7 @@ export class RetroMesa {
       balao.mesh.quaternion.copy(this.camera.quaternion);
       balao.mesh.material.opacity = k > 0.72 ? (1 - k) / 0.28 : 1;
       if (k < 1) return true;
-      balao.mesh.removeFromParent();
-      balao.textura.dispose();
-      balao.mesh.geometry.dispose();
-      balao.mesh.material.dispose();
+      this.descartarBalao(balao);
       return false;
     });
 
@@ -1253,12 +1356,7 @@ export class RetroMesa {
     this.timer.dispose();
     pararAmbiente();
     for (const reacao of this.reacoesVoo) descartarObjeto(reacao.group);
-    for (const balao of this.baloesFala) {
-      balao.mesh.removeFromParent();
-      balao.textura.dispose();
-      balao.mesh.geometry.dispose();
-      balao.mesh.material.dispose();
-    }
+    for (const balao of this.baloesFala) this.descartarBalao(balao);
     for (const r of this.reus) r.dispose();
     this.rt.dispose();
     (this.blitMat.uniforms.tBayer.value as THREE.Texture).dispose();
