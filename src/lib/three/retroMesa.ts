@@ -21,6 +21,7 @@ import {
   somBalao,
   somMartelada,
   somCarta,
+  somSoco,
   somZap,
 } from './sons3d';
 
@@ -196,13 +197,17 @@ interface Anim {
 class Carta {
   group: THREE.Group;
   mesh: THREE.Mesh;
+  readonly frente: THREE.Texture;
   viradaPraCima: boolean;
+  texto = '';
+  autor = '';
+  azProva = 0; // ângulo do dono na mesa (VOCÊ = 360, pra julgar por último)
   private flipT = -1; // -1 = sem flip em andamento
   private baseY = 0;
   anim: Anim | null = null;
-  hover = false;
 
   constructor(frente: THREE.Texture, verso: THREE.Texture, corLateral: number) {
+    this.frente = frente;
     const lado = new THREE.MeshLambertMaterial({ color: corLateral });
     const matFrente = new THREE.MeshLambertMaterial({ map: frente });
     const matVerso = new THREE.MeshLambertMaterial({ map: verso });
@@ -242,9 +247,7 @@ class Carta {
         this.group.position.y = this.baseY;
       }
     } else {
-      // hover: levanta de leve
-      const alvo = this.baseY + (this.hover ? 0.14 : 0);
-      this.group.position.y += (alvo - this.group.position.y) * Math.min(1, dt * 12);
+      this.group.position.y += (this.baseY - this.group.position.y) * Math.min(1, dt * 12);
     }
   }
 
@@ -261,6 +264,7 @@ interface ReacaoVoo {
   t0: number;
   dur: number;
   giro: THREE.Vector3;
+  aoTerminar?: () => void;
 }
 
 interface BalaoFala {
@@ -291,10 +295,9 @@ export class RetroMesa {
   private blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private blitMat: THREE.ShaderMaterial;
   private timer = new THREE.Timer();
-  private raycaster = new THREE.Raycaster();
-  private pointer = new THREE.Vector2(-2, -2);
   private cartas: Carta[] = [];
   private provas: Carta[] = [];
+  private cartaPreta: Carta | null = null;
   private versoTex: THREE.CanvasTexture | null = null;
   private spotCulpado!: THREE.SpotLight;
   private carimbo: THREE.Mesh | null = null;
@@ -314,6 +317,15 @@ export class RetroMesa {
   private juizReu: Reu | null = null;
   private marteloT = -1;
   private shake = 0;
+  private assentosJogadores: { nome: string; az: number }[] = [];
+  private julgamento: {
+    fila: Carta[];
+    idx: number;
+    proximaT: number;
+    onRevela: (info: { autor: string; texto: string }) => void;
+    onFim: () => void;
+  } | null = null;
+  private onCulpadoCb: ((nome: string) => void) | null = null;
   private raf = 0;
   private atoAtual: Ato = 'mesa';
   private pixelSize: number;
@@ -323,6 +335,7 @@ export class RetroMesa {
 
   constructor(canvas: HTMLCanvasElement, opts: { pixelSize?: number; pretas: string[]; brancas: string[] }) {
     this.canvas = canvas;
+    this.canvas.style.cursor = 'grab';
     this.pixelSize = opts.pixelSize ?? 4;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'low-power' });
@@ -346,8 +359,8 @@ export class RetroMesa {
     this.controls.enablePan = false;
 
     // névoa fecha o vazio ao redor da mesa — o breu É o porão
-    this.scene.background = new THREE.Color(0x17161c);
-    this.scene.fog = new THREE.Fog(0x17161c, 14, 34);
+    this.scene.background = new THREE.Color(0x1b1a21);
+    this.scene.fog = new THREE.Fog(0x1b1a21, 16, 40);
 
     this.montarCenario();
     this.montarLampada();
@@ -402,7 +415,7 @@ export class RetroMesa {
           c += limiar * (uDither / uLevels);
           c = floor(c * uLevels + 0.5) / uLevels;
           // fósforo nunca apaga: levanta os pretos (o escuro fica VISÍVEL)
-          c = c * 0.94 + vec3(0.055);
+          c = c * 0.92 + vec3(0.08);
           // máscara RGB sutil (grade de fósforo) por coluna de pixelão
           float m = mod(floor(gl_FragCoord.x / uPixel), 3.0);
           c *= vec3(0.985) + 0.03 * vec3(
@@ -415,7 +428,7 @@ export class RetroMesa {
           c *= 1.0 - 0.055 * linha;
           // vinheta pesada nos cantos — o sinistro mora na borda
           float vig = smoothstep(0.85, 0.3, length(d) * 1.25);
-          c *= 0.68 + 0.32 * vig;
+          c *= 0.8 + 0.2 * vig;
           // grão animado
           float g = fract(sin(dot(gl_FragCoord.xy + mod(uTime, 10.0) * 137.0, vec2(12.9898, 78.233))) * 43758.5453);
           c += (g - 0.5) * 0.025;
@@ -435,8 +448,6 @@ export class RetroMesa {
 
     this.resize();
     window.addEventListener('pointerdown', this.onPrimeiroGesto);
-    canvas.addEventListener('pointermove', this.onPointerMove);
-    canvas.addEventListener('click', this.onClick);
     this.loop();
   }
 
@@ -480,8 +491,8 @@ export class RetroMesa {
   private montarCenario() {
     // Tribunal do Porão v2: cena VISÍVEL — o clima sinistro vem do filtro de
     // TV (scanlines/vinheta/grão no shader) e da lâmpada, não da escuridão.
-    const hemi = new THREE.HemisphereLight(0xfff0dc, 0x6b6a72, 1.75);
-    const preenchimento = new THREE.DirectionalLight(COR.paper, 0.65);
+    const hemi = new THREE.HemisphereLight(0xfff0dc, 0x6b6a72, 2.4);
+    const preenchimento = new THREE.DirectionalLight(COR.paper, 1.1);
     preenchimento.position.set(4, 6, 7);
     // Vermelho apagado no cotidiano; só acende quando existe veredito.
     this.recorteVermelho = new THREE.DirectionalLight(COR.red, 0);
@@ -557,13 +568,13 @@ export class RetroMesa {
     );
     this.bulbo.position.y = -4.42;
     // cone calculado pra molhar a mesa inteira E as cabeças dos réus (r=5.15)
-    this.spot = new THREE.SpotLight(0xfff4e0, 170, 0, 1.12, 0.5, 2);
+    this.spot = new THREE.SpotLight(0xfff4e0, 230, 0, 1.12, 0.5, 2);
     this.spot.position.y = -4.4;
     this.spot.castShadow = true;
     this.spot.shadow.mapSize.set(512, 512);
     this.spot.shadow.bias = -0.002;
     this.spot.target.position.set(0, -8.2, 0); // aponta reto pra baixo e acompanha o balanço
-    this.brilho = new THREE.PointLight(0xffe9c4, 8, 9, 2);
+    this.brilho = new THREE.PointLight(0xffe9c4, 10, 9, 2);
     this.brilho.position.y = -4.3;
     this.pendulo.add(fio, cupula, this.bulbo, this.spot, this.spot.target, this.brilho);
     this.scene.add(this.pendulo);
@@ -593,6 +604,8 @@ export class RetroMesa {
       this.reus.push(r);
       if (a.juiz) this.juizReu = r;
     });
+    // quem joga carta nesta rodada: todos menos o juiz (bots inclusos)
+    this.assentosJogadores = assentos.filter((a) => !a.juiz).map(({ nome, az }) => ({ nome, az }));
 
     const martelo = new THREE.Group();
     const cabo = new THREE.Mesh(
@@ -614,7 +627,7 @@ export class RetroMesa {
     this.martelo = martelo;
   }
 
-  // ── API de teste (painel "laboratório de caos" da página) ──────────────────
+  // ── Ferramentas internas de calibração (sem painel na UI final) ────────────
 
   /** Todos os réus fazem a mesma cara — pra avaliar as expressões. */
   testarExpressao(e: Expressao) {
@@ -714,11 +727,11 @@ export class RetroMesa {
     this.camera.updateProjectionMatrix();
   }
 
-  /** Posição de um slot no anel de provas: 8 lugares ao redor da carta preta. */
-  private slotProva(i: number, total = 8): { pos: THREE.Vector3; rotY: number } {
-    const a = (i / total) * Math.PI * 2 + Math.PI / total;
+  /** Slot da prova ALINHADO com quem jogou: na frente da cadeira dele. */
+  private slotProva(az: number): { pos: THREE.Vector3; rotY: number } {
+    const a = (az * Math.PI) / 180;
     return {
-      pos: new THREE.Vector3(Math.sin(a) * 2.35, 0.02, -0.15 + Math.cos(a) * 2.35),
+      pos: new THREE.Vector3(Math.sin(a) * 2.35, 0.02, Math.cos(a) * 2.35),
       rotY: a + (Math.random() - 0.5) * 0.12,
     };
   }
@@ -726,15 +739,19 @@ export class RetroMesa {
   /**
    * A ponte 2D→3D: a mão do jogador vive na UI da página; ao clicar, a carta
    * entra no mundo voando da sua cadeira até o próximo slot livre do anel.
-   * Retorna false quando o anel está cheio (8 provas).
+   * Retorna false quando a prova do jogador já entrou ou o julgamento começou.
    */
   jogarCarta(texto: string): boolean {
-    if (this.provas.length >= 8 || !this.versoTex) return false;
+    if (!this.versoTex || this.julgamento) return false;
+    if (this.provas.some((p) => p.autor === 'VOCÊ')) return false; // já jogou
     const frente = drawCardTexture(texto, false);
     this.texturas.push(frente);
     const carta = new Carta(frente, this.versoTex, COR.paper);
+    carta.texto = texto;
+    carta.autor = 'VOCÊ';
+    carta.azProva = 360; // sua carta é a última do sentido horário
     carta.deitarVirada(); // provas chegam lacradas
-    const slot = this.slotProva(this.provas.length);
+    const slot = this.slotProva(0); // seu slot: na frente da SUA cadeira
     carta.group.rotation.y = slot.rotY;
     carta.group.position.set(0, 1.3, 4.3); // nasce "de você" (cadeira do POV)
     this.scene.add(carta.group);
@@ -752,15 +769,116 @@ export class RetroMesa {
     return true;
   }
 
+  /**
+   * O JULGAMENTO: revela as provas em sentido horário (a sua por último),
+   * uma a cada ~1.2s. `onRevela` alimenta a UI 2D com autor + resposta;
+   * `onFim` avisa que o júri terminou de ler.
+   */
+  julgar(
+    onRevela: (info: { autor: string; texto: string }) => void,
+    onFim: () => void
+  ): boolean {
+    if (this.julgamento || !this.provas.some((p) => p.autor === 'VOCÊ')) return false;
+    const fila = [...this.provas].sort((a, b) => a.azProva - b.azProva);
+    this.julgamento = {
+      fila,
+      idx: 0,
+      proximaT: this.timer.getElapsed() + 0.7,
+      onRevela,
+      onFim,
+    };
+    return true;
+  }
+
+  private limparVeredito() {
+    this.julgamento = null;
+    this.marteloT = -1;
+    this.martelo.rotation.z = 0;
+    this.onCulpadoCb = null;
+    this.frisoMat.color.setHex(COR.panel);
+    this.recorteVermelho.intensity = 0;
+    if (this.carimbo) {
+      descartarObjeto(this.carimbo);
+      this.carimbo = null;
+    }
+    this.culpadoT = -1;
+    this.spotCulpado.intensity = 0;
+  }
+
+  private removerCarta(carta: Carta) {
+    this.cartas = this.cartas.filter((c) => c !== carta);
+    descartarObjeto(carta.group);
+    if (carta.frente !== this.versoTex) {
+      this.texturas = this.texturas.filter((textura) => textura !== carta.frente);
+      carta.frente.dispose();
+    }
+  }
+
+  /**
+   * Prepara uma rodada nova sem reconstruir o cenário. A pergunta e as seis
+   * respostas dos outros jogadores são renovadas; a sétima prova vem da mão 2D.
+   */
+  prepararRodada(preta: string, brancas: string[]) {
+    if (!this.versoTex) return false;
+    this.limparVeredito();
+    const antigas = [...this.provas];
+    if (this.cartaPreta) antigas.push(this.cartaPreta);
+    for (const carta of antigas) this.removerCarta(carta);
+    this.provas = [];
+    this.cartaPreta = null;
+    this.montarRodada(preta, brancas, 0);
+    return true;
+  }
+
+  /** Arremesso COM ALVO: da sua cadeira até o réu escolhido (roda de emotes). */
+  arremessarEm(nomeAlvo: string, tipo: Reacao3D): boolean {
+    const alvo = this.reus.find((r) => r.nome === nomeAlvo);
+    if (!alvo) return false;
+    if (this.reacoesVoo.length >= 8) {
+      const antiga = this.reacoesVoo.shift();
+      if (antiga) descartarObjeto(antiga.group);
+    }
+    const group = this.criarObjetoReacao(tipo);
+    const inicio = new THREE.Vector3(0, 1.2, 4.35);
+    const fim = alvo.group.position.clone().multiplyScalar(0.92);
+    fim.y = 1.1;
+    const controle = inicio.clone().lerp(fim, 0.5);
+    controle.y = 2.9;
+    group.position.copy(inicio);
+    this.scene.add(group);
+    this.reacoesVoo.push({
+      group,
+      inicio,
+      controle,
+      fim,
+      t0: this.timer.getElapsed(),
+      dur: 0.7,
+      giro: new THREE.Vector3(6 + Math.random() * 4, 8, 5),
+      aoTerminar: () => {
+        alvo.setExpressao(tipo === 'rosa' ? 'riso' : 'choque');
+        if (tipo !== 'rosa') alvo.acao('facepalm');
+        somSoco();
+      },
+    });
+    somArremesso();
+    return true;
+  }
+
+  /** Participantes visíveis que podem receber reações, na ordem da mesa. */
+  getAlvos(): string[] {
+    return this.reus.map((r) => r.nome);
+  }
+
   getAto(): Ato {
     return this.atoAtual;
   }
 
   /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake, spotlight
    *  vermelho e carimbo CULPADO esmagando a prova sorteada. */
-  martelada() {
+  martelada(onCulpado?: (nome: string) => void) {
     if (this.marteloT < 0) {
       this.marteloT = 0;
+      this.onCulpadoCb = onCulpado ?? null;
       this.frisoMat.color.setHex(COR.red);
       this.recorteVermelho.intensity = 0.7;
       // limpa o veredito anterior
@@ -794,46 +912,16 @@ export class RetroMesa {
     this.carimbo.renderOrder = 10;
     this.scene.add(this.carimbo);
     this.culpadoT = 0;
+    this.onCulpadoCb?.(alvo.autor || 'ALGUÉM');
   }
 
   private montarCartas(pretas: string[], brancas: string[]) {
-    const agora = 0;
     this.versoTex = drawBackTexture();
     this.texturas.push(this.versoTex);
-    const verso = this.versoTex;
-
-    const criar = (texto: string, preta: boolean) => {
-      const frente = drawCardTexture(texto, preta);
-      this.texturas.push(frente);
-      const carta = new Carta(frente, verso, preta ? COR.ink : COR.paper);
-      this.scene.add(carta.group);
-      this.cartas.push(carta);
-      return carta;
-    };
-
-    // carta preta no centro, levemente torta e erguida num apoio pra destacar do tampo
-    const preta = criar(pretas[0] ?? 'Cadê a carta preta?', true);
-    preta.group.position.set(0, 0.09, -0.4);
-    preta.group.rotation.y = 0.06;
-    preta.fixarBase();
-    this.entrarDoAlto(preta, agora + 0.2);
-
-    // provas lacradas num ANEL de 8 slots ao redor da carta preta — a mesa
-    // cheia cabe inteira. 7 chegam prontas; o 8º slot é seu (jogarCarta).
-    const provasTextos = brancas.slice(0, 7);
-    provasTextos.forEach((t, i) => {
-      const c = criar(t, false);
-      const slot = this.slotProva(i);
-      c.group.position.copy(slot.pos);
-      c.group.rotation.y = slot.rotY;
-      c.deitarVirada();
-      c.fixarBase();
-      this.provas.push(c);
-      this.entrarDoAlto(c, agora + 0.5 + i * 0.12);
-    });
+    this.montarRodada(pretas[0] ?? 'Cadê a carta preta?', brancas, 0);
 
     // pilha de compra, afastada do anel
-    const pilha = new Carta(verso, verso, COR.ink);
+    const pilha = new Carta(this.versoTex, this.versoTex, COR.ink);
     pilha.group.position.set(-3.2, 0.1, -2.0);
     pilha.group.rotation.y = -0.3;
     pilha.mesh.scale.z = 14; // pilha gorda
@@ -841,6 +929,43 @@ export class RetroMesa {
     pilha.fixarBase();
     this.scene.add(pilha.group);
     this.cartas.push(pilha);
+  }
+
+  private criarCarta(texto: string, preta: boolean): Carta {
+    if (!this.versoTex) throw new Error('Verso das cartas ainda não foi criado.');
+    const frente = drawCardTexture(texto, preta);
+    this.texturas.push(frente);
+    const carta = new Carta(frente, this.versoTex, preta ? COR.ink : COR.paper);
+    this.scene.add(carta.group);
+    this.cartas.push(carta);
+    return carta;
+  }
+
+  private montarRodada(pretaTexto: string, brancas: string[], agora: number) {
+    // carta preta no centro, levemente torta e erguida num apoio pra destacar do tampo
+    const preta = this.criarCarta(pretaTexto, true);
+    preta.group.position.set(0, 0.09, -0.4);
+    preta.group.rotation.y = 0.06;
+    preta.fixarBase();
+    this.cartaPreta = preta;
+    this.entrarDoAlto(preta, agora + 0.2);
+
+    // provas lacradas ALINHADAS com os donos: cada carta na frente de quem
+    // jogou (todos menos o juiz). O slot da frente (az 0) é seu — jogarCarta.
+    this.assentosJogadores.forEach((a, i) => {
+      const texto = brancas[i] ?? 'Uma carta em branco.';
+      const c = this.criarCarta(texto, false);
+      c.texto = texto;
+      c.autor = a.nome;
+      c.azProva = a.az;
+      const slot = this.slotProva(a.az);
+      c.group.position.copy(slot.pos);
+      c.group.rotation.y = slot.rotY;
+      c.deitarVirada();
+      c.fixarBase();
+      this.provas.push(c);
+      this.entrarDoAlto(c, agora + 0.5 + i * 0.12);
+    });
   }
 
   private criarObjetoReacao(tipo: Reacao3D): THREE.Group {
@@ -930,11 +1055,6 @@ export class RetroMesa {
     };
   }
 
-  private onPointerMove = (e: PointerEvent) => {
-    const r = this.canvas.getBoundingClientRect();
-    this.pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-  };
-
   private onPrimeiroGesto = () => {
     iniciarAmbiente();
   };
@@ -942,22 +1062,6 @@ export class RetroMesa {
   setSomAtivo(ativo: boolean) {
     if (ativo) iniciarAmbiente();
     else pararAmbiente();
-  }
-
-  private onClick = () => {
-    const hit = this.provaSobOPonteiro();
-    if (hit) {
-      hit.flip();
-      somCarta();
-    }
-  };
-
-  private provaSobOPonteiro(): Carta | null {
-    this.raycaster.setFromCamera(this.pointer, this.camera);
-    const alvos = this.provas.map((p) => p.mesh);
-    const hits = this.raycaster.intersectObjects(alvos, false);
-    if (!hits.length) return null;
-    return (hits[0].object.userData.carta as Carta) ?? null;
   }
 
   setPixelSize(px: number) {
@@ -997,8 +1101,8 @@ export class RetroMesa {
       somZap();
     }
     if (t < this.blinkAte) fator = 0.12;
-    this.spot.intensity = 170 * fator;
-    this.brilho.intensity = 8 * fator;
+    this.spot.intensity = 230 * fator;
+    this.brilho.intensity = 10 * fator;
     (this.bulbo.material as THREE.MeshBasicMaterial).color.setHex(fator < 0.5 ? 0x55504a : 0xfff4e0);
 
     // os réus vivem: respiração + caos aleatório (expressões e ações)
@@ -1028,9 +1132,28 @@ export class RetroMesa {
       reacao.group.rotation.y = reacao.giro.y * k;
       reacao.group.rotation.z = reacao.giro.z * k;
       if (k < 1) return true;
+      reacao.aoTerminar?.();
       descartarObjeto(reacao.group);
       return false;
     });
+
+    // o julgamento lê as provas em sentido horário, uma por vez
+    if (this.julgamento && t > this.julgamento.proximaT) {
+      const j = this.julgamento;
+      if (j.idx < j.fila.length) {
+        const c = j.fila[j.idx];
+        if (!c.viradaPraCima) c.flip();
+        somCarta();
+        j.onRevela({ autor: c.autor, texto: c.texto });
+        if (j.idx % 2 === 0) this.juizReu?.acao('apontar');
+        j.idx++;
+        j.proximaT = t + 1.25;
+      } else {
+        const fim = j.onFim;
+        this.julgamento = null;
+        fim();
+      }
+    }
 
     this.baloesFala = this.baloesFala.filter((balao) => {
       const k = Math.min((t - balao.t0) / balao.dur, 1);
@@ -1106,11 +1229,6 @@ export class RetroMesa {
       }
     }
 
-    // hover nas provas
-    const sob = this.provaSobOPonteiro();
-    for (const p of this.provas) p.hover = p === sob;
-    this.canvas.style.cursor = sob ? 'pointer' : 'grab';
-
     // screen shake do veredito — 1 frame de violência, decai rápido
     if (this.shake > 0.003) {
       this.camera.position.x += (Math.random() - 0.5) * this.shake;
@@ -1131,8 +1249,6 @@ export class RetroMesa {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener('pointerdown', this.onPrimeiroGesto);
-    this.canvas.removeEventListener('pointermove', this.onPointerMove);
-    this.canvas.removeEventListener('click', this.onClick);
     this.controls.dispose();
     this.timer.dispose();
     pararAmbiente();
@@ -1145,10 +1261,14 @@ export class RetroMesa {
     }
     for (const r of this.reus) r.dispose();
     this.rt.dispose();
+    (this.blitMat.uniforms.tBayer.value as THREE.Texture).dispose();
+    this.blitScene.traverse((o) => {
+      if (o instanceof THREE.Mesh) o.geometry.dispose();
+    });
     this.blitMat.dispose();
     for (const t of this.texturas) t.dispose();
     this.scene.traverse((o) => {
-      if (o instanceof THREE.Mesh) {
+      if (o instanceof THREE.Mesh || o instanceof THREE.Points) {
         o.geometry.dispose();
         const mats = Array.isArray(o.material) ? o.material : [o.material];
         mats.forEach((m) => m.dispose());

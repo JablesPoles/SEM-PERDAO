@@ -197,6 +197,7 @@ function criarCordao(pontos: THREE.Vector3[], material: THREE.Material): THREE.M
 
 export class Reu {
   group = new THREE.Group();
+  readonly nome: string;
   readonly manequim: boolean;
   expressao: Expressao = 'neutro';
 
@@ -210,6 +211,7 @@ export class Reu {
   private texturas: THREE.Texture[] = [];
 
   constructor(nome: string, cor: string, opts: ReuOpts = {}) {
+    this.nome = nome;
     this.manequim = !!opts.manequim;
     const corTunica = new THREE.Color(this.manequim ? '#4a4855' : cor);
     const emissivoTunica = corTunica.clone().multiplyScalar(0.14);
