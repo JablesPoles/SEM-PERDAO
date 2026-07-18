@@ -13,10 +13,19 @@ export interface WhiteCard {
 
 // Customização deliberadamente curada: todas as opções têm implementação
 // visual conhecida e o objeto continua pequeno/serializável para snapshots.
-export const CULTIST_ROBES = ['blood', 'ash', 'midnight', 'moss'] as const;
+export const CULTIST_ROBES = [
+  'blood',
+  'ash',
+  'midnight',
+  'moss',
+  'violet',
+  'rust',
+  'abyss',
+  'linen',
+] as const;
 export const CULTIST_HOODS = ['classic', 'spire', 'shrouded'] as const;
 export const CULTIST_FACES = ['void', 'ember', 'grin', 'weeping'] as const;
-export const CULTIST_ACCENTS = ['bone', 'brass', 'scarlet', 'cyan'] as const;
+export const CULTIST_ACCENTS = ['bone', 'brass', 'scarlet', 'cyan', 'gold', 'amethyst'] as const;
 export const CULTIST_ACCESSORIES = ['none', 'chain', 'candle', 'relic'] as const;
 
 export type CultistRobe = (typeof CULTIST_ROBES)[number];

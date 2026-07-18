@@ -23,6 +23,10 @@ export const ROBE_COLORS: Record<CultistAppearance['robe'], [string, string]> = 
   ash: ['#666168', '#201e22'],
   midnight: ['#22243f', '#090a16'],
   moss: ['#415137', '#11180f'],
+  violet: ['#4a2a5e', '#160c1e'],
+  rust: ['#8a4c1f', '#2b1608'],
+  abyss: ['#1e4744', '#0a1716'],
+  linen: ['#b3a98f', '#3d382c'],
 };
 
 export const ACCENT_COLORS: Record<CultistAppearance['accent'], string> = {
@@ -30,6 +34,8 @@ export const ACCENT_COLORS: Record<CultistAppearance['accent'], string> = {
   brass: '#c69138',
   scarlet: '#ff3b2f',
   cyan: '#5ee7e7',
+  gold: '#e3b341',
+  amethyst: '#a06bff',
 };
 
 export const FACE_MARKS: Record<CultistAppearance['face'], string> = {
@@ -62,6 +68,10 @@ export const APPEARANCE_GROUPS: GrupoAparencia[] = [
       { value: 'ash', label: 'Cinza' },
       { value: 'midnight', label: 'Meia-noite' },
       { value: 'moss', label: 'Musgo' },
+      { value: 'violet', label: 'Púrpura' },
+      { value: 'rust', label: 'Ferrugem' },
+      { value: 'abyss', label: 'Abissal' },
+      { value: 'linen', label: 'Linho' },
     ],
   },
   {
@@ -91,6 +101,8 @@ export const APPEARANCE_GROUPS: GrupoAparencia[] = [
       { value: 'brass', label: 'Latão' },
       { value: 'scarlet', label: 'Escarlate' },
       { value: 'cyan', label: 'Ciano' },
+      { value: 'gold', label: 'Ouro' },
+      { value: 'amethyst', label: 'Ametista' },
     ],
   },
   {

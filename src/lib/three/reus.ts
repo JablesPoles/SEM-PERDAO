@@ -57,6 +57,10 @@ const COR_ROBE: Record<CultistAppearance['robe'], string> = {
   ash: '#625d63',
   midnight: '#25243a',
   moss: '#48563b',
+  violet: '#4a2a5e',
+  rust: '#8a4c1f',
+  abyss: '#1e4744',
+  linen: '#b3a98f',
 };
 
 const COR_ACENTO: Record<CultistAppearance['accent'], string> = {
@@ -64,12 +68,15 @@ const COR_ACENTO: Record<CultistAppearance['accent'], string> = {
   brass: '#a97d3e',
   scarlet: '#ff3b2f',
   cyan: '#43d9d4',
+  gold: '#e3b341',
+  amethyst: '#a06bff',
 };
 
 const ESCALA_CAPUZ: Record<CultistHood, readonly [number, number, number]> = {
   classic: [1.08, 1.18, 0.98],
   spire: [1.01, 1.34, 0.95],
-  shrouded: [1.16, 1.14, 1.03],
+  // Mortalha: volume nos lados, sem empurrar tecido pra frente (z <= 1)
+  shrouded: [1.15, 1.1, 0.99],
 };
 
 function texCanvas(c: HTMLCanvasElement): THREE.CanvasTexture {
@@ -160,7 +167,9 @@ function meiaAberturaOgiva(v: number, estilo: CultistHood): number {
     }
   }
   if (estilo === 'spire') return valor * 0.9;
-  if (estilo === 'shrouded') return valor * 1.06;
+  // Mortalha: abertura bem maior — o tecido cai LARGO pelos lados sem nunca
+  // cruzar na frente do plano do rosto (era o overlap reportado).
+  if (estilo === 'shrouded') return valor * 1.24;
   return valor;
 }
 
@@ -449,7 +458,9 @@ export class Reu {
     ].map(([r, y]) => new THREE.Vector2(r, y));
     const cowl = new THREE.Mesh(new THREE.LatheGeometry(perfilCowl, 20), matTunica);
     cowl.position.y = 1.13;
-    if (appearance.hood === 'shrouded') cowl.scale.set(1.12, 1.08, 1.12);
+    // Mortalha: ombros mais largos SEM subir/avançar a gola na frente do
+    // queixo — escalar y/z aqui cobria a boca do rosto.
+    if (appearance.hood === 'shrouded') cowl.scale.set(1.12, 1.0, 1.02);
     if (appearance.hood === 'spire') cowl.scale.set(0.96, 1.04, 0.96);
     cowl.castShadow = true;
 
@@ -506,7 +517,9 @@ export class Reu {
         })
       );
       // Ainda flutua no vazio, mas perto o bastante para pertencer à cabeça.
-      this.rostoMesh.position.set(0, appearance.hood === 'spire' ? 0.09 : 0.07, 0.326);
+      // Na mortalha o rosto vem um tico à frente pra folga da borda larga.
+      const zRosto = appearance.hood === 'shrouded' ? 0.35 : 0.326;
+      this.rostoMesh.position.set(0, appearance.hood === 'spire' ? 0.09 : 0.07, zRosto);
       capuzGrp.add(this.rostoMesh);
     }
 

@@ -49,9 +49,10 @@ export class VitrineReu {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.BasicShadowMap;
 
-    this.camera = new THREE.PerspectiveCamera(40, 1, 0.1, 30);
-    this.camera.position.set(0, 1.45, 3.55);
-    this.camera.lookAt(0, 1.02, 0);
+    // enquadra até o capuz agulha (o mais alto) sem cortar o topo
+    this.camera = new THREE.PerspectiveCamera(44, 1, 0.1, 30);
+    this.camera.position.set(0, 1.5, 3.8);
+    this.camera.lookAt(0, 1.05, 0);
 
     this.scene.background = new THREE.Color(FUNDO);
     this.scene.fog = new THREE.Fog(FUNDO, 6, 14);
