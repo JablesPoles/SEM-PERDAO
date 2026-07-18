@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 function generateRoomCode(): string {
@@ -12,30 +12,39 @@ export default function CriarSala() {
   const [roomCode] = useState(() => generateRoomCode());
   const router = useRouter();
 
+  // o menu já pode ter batizado o réu — aproveita (fora do render, pós-hidratação)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      setName(sessionStorage.getItem('sp-name') ?? localStorage.getItem('sp-name') ?? '');
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
   const handleCreate = () => {
     if (!name.trim()) return;
     sessionStorage.setItem('sp-name', name.trim());
+    localStorage.setItem('sp-name', name.trim());
     sessionStorage.setItem('sp-host-room', roomCode);
     router.push(`/sala/${roomCode}`);
   };
 
   return (
-    <div className="min-h-screen lobby-bg relative flex flex-col items-center justify-center p-7">
+    <div className="min-h-screen table-bg text-paper relative flex flex-col items-center justify-center p-7">
       <button
         onClick={() => router.push('/')}
-        className="absolute top-6 left-6 text-ink/50 hover:text-red text-sm font-bold transition-colors"
+        className="absolute top-6 left-6 text-paper/50 hover:text-red text-sm font-bold transition-colors"
       >
         ← Voltar
       </button>
 
       <div className="flex flex-col items-center gap-1.5">
         <span className="text-red font-bold text-[12px] tracking-[0.15em]">MONTE O TRIBUNAL</span>
-        <h1 className="font-display text-ink text-5xl leading-none">CRIAR SALA</h1>
+        <h1 className="font-display text-5xl leading-none">CRIAR SALA</h1>
       </div>
 
       <div className="w-full max-w-sm flex flex-col gap-4 mt-9">
         <div className="flex flex-col gap-2">
-          <label className="text-ink/55 text-[11px] font-bold tracking-[2px] pl-1">SEU NOME NA MESA</label>
+          <label className="text-paper/55 text-[11px] font-bold tracking-[2px] pl-1">SEU NOME NA MESA</label>
           <input
             type="text"
             value={name}
@@ -44,7 +53,7 @@ export default function CriarSala() {
             placeholder="Como te chamamos?"
             maxLength={16}
             autoFocus
-            className="h-[54px] rounded-xl bg-white border-2 border-ink/20 text-ink px-[18px] outline-none focus:border-ink transition-colors placeholder:text-ink/30 font-medium"
+            className="h-[54px] rounded-xl bg-white/5 border-2 border-white/15 text-paper px-[18px] outline-none focus:border-paper/60 transition-colors placeholder:text-paper/30 font-medium"
           />
         </div>
 
@@ -56,7 +65,7 @@ export default function CriarSala() {
           ABRIR A SALA
         </button>
 
-        <p className="text-ink/45 text-xs text-center leading-normal font-medium">
+        <p className="text-paper/45 text-xs text-center leading-normal font-medium">
           Você abre a sala e compartilha o código. Precisa de pelo
           <br />
           menos 3 na mesa — dá pra completar com bots.

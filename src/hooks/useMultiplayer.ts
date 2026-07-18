@@ -11,6 +11,7 @@ import {
   Reaction,
 } from '../lib/types';
 import { CustomCards, sanitizeCustomCards } from '../lib/customCards';
+import { CULTIST_APPEARANCE_KEY } from '../lib/aparencia';
 import { supabase } from '../lib/supabase';
 import {
   advanceToNextRound,
@@ -94,7 +95,6 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const DISCONNECT_GRACE_MS = 5000;
 // Ids de bot ficam bem acima dos de humanos para nunca colidirem.
 const BOT_ID_BASE = 100;
-const CULTIST_APPEARANCE_KEY = 'sp-cultist-appearance';
 const RITUAL_COUNTDOWN_MS = 3000;
 
 export const DEFAULT_LOBBY_RULES: LobbyRules = Object.freeze({

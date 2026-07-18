@@ -208,7 +208,12 @@ silêncio (ok).
 - [ ] Timer diegético: lâmpada pisca acelerando; migração de host = lâmpada
   pisca e estabiliza
 - [ ] Vitória: blackout + spotlight único + confete preto/vermelho
-- [ ] Customização dos cultistas (olhos, capuz, adereços, crachá)
+- [x] Menu do Tribunal (home escura) + criação de personagem com preview 3D
+  REAL: `vitrineReu.ts` (provador com lâmpada, giro por arrasto, filtro retrô
+  enxuto) + `CultistStage3D.tsx`, usado no menu e no lobby ritual. Catálogo e
+  persistência unificados em `lib/aparencia.ts` (mesma chave
+  `sp-cultist-appearance` do useMultiplayer); nome persiste em session+local.
+  Os minis do banco dos réus continuam CSS (baratos).
 - [ ] UI dentro do mundo (placar-lousa, crachás-nome, HUD 2D mínimo)
 
 ## Armadilhas conhecidas

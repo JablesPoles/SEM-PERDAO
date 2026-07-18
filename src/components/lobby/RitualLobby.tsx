@@ -7,6 +7,14 @@ import type {
   LobbyPlayer,
   LobbyRules,
 } from '../../lib/types';
+import {
+  ACCENT_COLORS,
+  ACCESSORY_MARKS,
+  APPEARANCE_GROUPS,
+  FACE_MARKS,
+  ROBE_COLORS,
+} from '../../lib/aparencia';
+import { CultistStage3D } from '../CultistStage3D';
 import styles from './RitualLobby.module.css';
 
 interface RitualLobbyProps {
@@ -31,89 +39,7 @@ interface RitualLobbyProps {
   onLeave: () => void;
 }
 
-const ROBE_COLORS: Record<CultistAppearance['robe'], [string, string]> = {
-  blood: ['#751d1a', '#260d0d'],
-  ash: ['#666168', '#201e22'],
-  midnight: ['#22243f', '#090a16'],
-  moss: ['#415137', '#11180f'],
-};
-
-const ACCENT_COLORS: Record<CultistAppearance['accent'], string> = {
-  bone: '#ddd1bb',
-  brass: '#c69138',
-  scarlet: '#ff3b2f',
-  cyan: '#5ee7e7',
-};
-
-const FACE_MARKS: Record<CultistAppearance['face'], string> = {
-  void: '▪ ▪',
-  ember: '▪ ▪',
-  grin: '⌒',
-  weeping: '┊ ┊',
-};
-
-const ACCESSORY_MARKS: Record<CultistAppearance['accessory'], string> = {
-  none: '',
-  chain: '⛓',
-  candle: '♨',
-  relic: '◆',
-};
-
-const APPEARANCE_GROUPS: Array<{
-  key: keyof CultistAppearance;
-  label: string;
-  options: Array<{ value: string; label: string }>;
-}> = [
-  {
-    key: 'robe',
-    label: 'Tecido do robe',
-    options: [
-      { value: 'blood', label: 'Sangue' },
-      { value: 'ash', label: 'Cinza' },
-      { value: 'midnight', label: 'Meia-noite' },
-      { value: 'moss', label: 'Musgo' },
-    ],
-  },
-  {
-    key: 'hood',
-    label: 'Forma do capuz',
-    options: [
-      { value: 'classic', label: 'Clássico' },
-      { value: 'spire', label: 'Agulha' },
-      { value: 'shrouded', label: 'Mortalha' },
-    ],
-  },
-  {
-    key: 'face',
-    label: 'Sigilo do rosto',
-    options: [
-      { value: 'void', label: 'Vazio' },
-      { value: 'ember', label: 'Brasa' },
-      { value: 'grin', label: 'Riso' },
-      { value: 'weeping', label: 'Lágrimas' },
-    ],
-  },
-  {
-    key: 'accent',
-    label: 'Metal ritual',
-    options: [
-      { value: 'bone', label: 'Osso' },
-      { value: 'brass', label: 'Latão' },
-      { value: 'scarlet', label: 'Escarlate' },
-      { value: 'cyan', label: 'Ciano' },
-    ],
-  },
-  {
-    key: 'accessory',
-    label: 'Relíquia',
-    options: [
-      { value: 'none', label: 'Nenhuma' },
-      { value: 'chain', label: 'Corrente' },
-      { value: 'candle', label: 'Vela' },
-      { value: 'relic', label: 'Relicário' },
-    ],
-  },
-];
+// Catálogo e cores vêm de lib/aparencia — mesma fonte do menu, sem drift.
 
 const PACE_PRESETS: Array<{
   label: string;
@@ -276,7 +202,14 @@ export function RitualLobby({
                 <span className={styles.panelMeta}>customização sincronizada</span>
               </div>
               <div className={styles.previewStage}>
-                {me && <CultistPreview appearance={me.appearance} name={me.name} />}
+                {me && (
+                  <CultistStage3D
+                    nome={me.name}
+                    aparencia={me.appearance}
+                    celebrarSinal={me.ready ? 1 : 0}
+                    className={styles.previewCanvas}
+                  />
+                )}
               </div>
               {me && (
                 <div className={styles.customizer}>
