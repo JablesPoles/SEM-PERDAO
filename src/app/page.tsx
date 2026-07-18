@@ -71,7 +71,7 @@ export default function Home() {
             A cada rodada, um <span className="text-red font-bold">juiz</span> lê a carta preta.
             Os outros jogam a carta branca mais cruel da mão.
             O juiz condena a melhor — e quem fez a graça leva o ponto.
-            Primeiro a fechar a conta vence. De 3 a 12 jogadores, na mesma sala ou no grupo do zap.
+            Depois das voltas combinadas, a maior ficha vence. De 3 a 8 jogadores, na mesma sala ou no grupo do zap.
           </p>
         </div>
 

@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Reu, EXPRESSOES, type Expressao, type Acao } from './reus';
+import type { MesaProofView, MesaSeatView, MesaView } from './mesaView';
 import { avatarColor } from '@/components/avatar';
 import {
   iniciarAmbiente,
@@ -48,6 +49,20 @@ export type Reacao3D = 'tomate' | 'sapato' | 'rosa';
 export type Ato = 'mesa' | 'pov' | 'provas' | 'juiz' | 'cima';
 export const ATOS: Ato[] = ['mesa', 'pov', 'provas', 'juiz', 'cima'];
 
+export type Qualidade3D = 'baixa' | 'media' | 'alta';
+
+export interface RetroMesaOptions {
+  pixelSize?: number;
+  /** Baralhos de demonstração usados somente pelo laboratório `/3d`. */
+  pretas?: string[];
+  brancas?: string[];
+  /** Quando presente, a cena nasce como renderer da partida real. */
+  mesaView?: MesaView;
+  qualidade?: Qualidade3D;
+  reducedMotion?: boolean;
+  onSelfImpact?: (tipo: Reacao3D) => void;
+}
+
 interface ConfigAto {
   pos: [number, number, number];
   alvo: [number, number, number];
@@ -62,7 +77,7 @@ const CONFIG_ATO: Record<Ato, ConfigAto> = {
   // PRIMEIRA PESSOA de verdade: olho na altura da cabeça de quem senta na
   // cadeira vazia (az 0°), mirando o juiz do outro lado. FOV mais aberto
   // pra mesa + réus caberem; a mão em leque entra por baixo do quadro.
-  pov: { pos: [0, 1.5, 5.0], alvo: [0, 1.0, -3.5], dist: [3, 10], polar: [0.38, Math.PI - 0.38], fov: 58 },
+  pov: { pos: [0, 1.5, 5.0], alvo: [0, 1.0, -3.5], dist: [3, 10], polar: [0.7, 2.05], fov: 58 },
   // close nas provas lacradas
   provas: { pos: [0, 2.5, 3.6], alvo: [0, 0.05, 1.05], dist: [1.5, 9], polar: [Math.PI / 6, Math.PI / 2.1], fov: 50 },
   // encarando o juiz de perto, do meio da mesa
@@ -318,7 +333,25 @@ export class RetroMesa {
   private juizReu: Reu | null = null;
   private marteloT = -1;
   private shake = 0;
+  private impactoShake = 0;
   private assentosJogadores: { nome: string; az: number }[] = [];
+  private reuPorId = new Map<number, Reu>();
+  private selfReu: Reu | null = null;
+  private nomePorId = new Map<number, string>();
+  private proofBundles = new Map<string, Carta[]>();
+  private proofByCard = new Map<Carta, string>();
+  private proofStateSignatures = new Map<string, string>();
+  private seatSignature = '';
+  private roundSignature = '';
+  private verdictProofId: string | null = null;
+  private deadlineEndsAt = 0;
+  private deadlineDurationMs = 0;
+  private reducedMotion = false;
+  private onSelfImpact: ((tipo: Reacao3D) => void) | null = null;
+  private realMode = false;
+  private selfId: number | null = null;
+  private presentationPhase: MesaView['phase'] | 'lab' = 'lab';
+  private shakeOffset = new THREE.Vector3();
   private julgamento: {
     fila: Carta[];
     idx: number;
@@ -336,13 +369,17 @@ export class RetroMesa {
   private canvas: HTMLCanvasElement;
   private texturas: THREE.Texture[] = [];
 
-  constructor(canvas: HTMLCanvasElement, opts: { pixelSize?: number; pretas: string[]; brancas: string[] }) {
+  constructor(canvas: HTMLCanvasElement, opts: RetroMesaOptions) {
     this.canvas = canvas;
     this.canvas.style.cursor = 'grab';
     this.pixelSize = opts.pixelSize ?? 4;
+    this.reducedMotion = opts.reducedMotion ?? false;
+    this.onSelfImpact = opts.onSelfImpact ?? null;
+    this.realMode = !!opts.mesaView;
+    this.selfId = opts.mesaView?.selfId ?? null;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'low-power' });
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = opts.qualidade !== 'baixa';
     this.renderer.shadowMap.type = THREE.BasicShadowMap; // sombra dura = retrô
 
     this.camera = new THREE.PerspectiveCamera(CONFIG_ATO.mesa.fov, 1, 0.1, 60);
@@ -367,8 +404,8 @@ export class RetroMesa {
 
     this.montarCenario();
     this.montarLampada();
-    this.montarReus();
-    this.montarCartas(opts.pretas, opts.brancas);
+    this.montarReus(opts.mesaView);
+    this.montarCartas(opts.pretas ?? [], opts.brancas ?? [], !!opts.mesaView);
     this.timer.connect(document);
 
     // ── passe de pixelização ──
@@ -452,6 +489,7 @@ export class RetroMesa {
     this.resize();
     window.addEventListener('pointerdown', this.onPrimeiroGesto);
     this.loop();
+    if (opts.mesaView) this.syncMesa(opts.mesaView);
   }
 
   private criarBayer(): THREE.DataTexture {
@@ -588,19 +626,28 @@ export class RetroMesa {
   }
 
   /** Os réus sentados + o martelo do juiz à espera do veredito. */
-  private montarReus() {
+  private montarReus(view?: MesaView) {
     // MESA CHEIA: 8 lugares. Azimute 0° = a SUA cadeira (POV); os outros 7
     // se espalham a cada 45°. O juiz senta sempre em frente a você (180°).
     // Com menos jogadores, é só omitir assentos — o layout máximo é este.
-    const assentos: { nome: string; az: number; juiz?: boolean; manequim?: boolean }[] = [
-      { nome: 'GABS', az: 45 },
-      { nome: 'VANZO', az: 90 },
-      { nome: 'PPVAZ', az: 135 },
-      { nome: 'NATH', az: 180, juiz: true },
-      { nome: 'RANDO', az: 225, manequim: true },
-      { nome: 'POLES', az: 270 },
-      { nome: 'CAROL', az: 315 },
-    ];
+    const assentos: { id?: number; nome: string; az: number; juiz?: boolean; manequim?: boolean; appearance?: MesaSeatView['appearance'] }[] = view
+      ? view.seats.map((seat) => ({
+            id: seat.id,
+            nome: seat.name,
+            az: THREE.MathUtils.radToDeg(seat.azimuthRad),
+            juiz: seat.isJudge,
+            manequim: !seat.connected,
+            appearance: seat.appearance,
+          }))
+      : [
+          { nome: 'GABS', az: 45 },
+          { nome: 'VANZO', az: 90 },
+          { nome: 'PPVAZ', az: 135 },
+          { nome: 'NATH', az: 180, juiz: true },
+          { nome: 'RANDO', az: 225, manequim: true },
+          { nome: 'POLES', az: 270 },
+          { nome: 'CAROL', az: 315 },
+        ];
     assentos.forEach((a, i) => {
       const r = new Reu(a.nome, avatarColor(i + 1), a);
       const rad = (a.az * Math.PI) / 180;
@@ -609,6 +656,11 @@ export class RetroMesa {
       r.group.lookAt(0, 0, 0);
       this.scene.add(r.group);
       this.reus.push(r);
+      if (a.id !== undefined) {
+        this.reuPorId.set(a.id, r);
+        this.nomePorId.set(a.id, a.nome);
+        if (a.id === view?.selfId) this.selfReu = r;
+      }
       if (a.juiz) this.juizReu = r;
     });
     // quem joga carta nesta rodada: todos menos o juiz (bots inclusos)
@@ -632,6 +684,67 @@ export class RetroMesa {
     martelo.rotation.y = 0.5;
     this.scene.add(martelo);
     this.martelo = martelo;
+    if (view) this.posicionarMartelo(view.seats, view.judgeId);
+  }
+
+  private posicionarMartelo(seats: readonly MesaSeatView[], judgeId: number | null) {
+    const judge = judgeId === null ? null : seats.find((seat) => seat.id === judgeId);
+    const az = judge?.azimuthRad ?? Math.PI;
+    // Fica na borda interna, levemente à direita do juiz. Se o juiz é o próprio
+    // jogador, o martelo aparece na beirada inferior do POV.
+    const raio = 3.45;
+    const lateral = 0.45;
+    this.martelo.position.set(
+      Math.sin(az) * raio + Math.cos(az) * lateral,
+      0.08,
+      Math.cos(az) * raio - Math.sin(az) * lateral
+    );
+    this.martelo.rotation.y = az + 0.5;
+  }
+
+  private rebuildSeats(view: MesaView) {
+    const signature = view.seats
+      .map((seat) => `${seat.id}:${seat.name}:${seat.azimuthRad.toFixed(4)}:${seat.isJudge ? 1 : 0}:${seat.connected ? 1 : 0}`)
+      .join('|');
+    if (signature === this.seatSignature) {
+      this.posicionarMartelo(view.seats, view.judgeId);
+      this.juizReu = view.judgeId === null ? null : (this.reuPorId.get(view.judgeId) ?? null);
+      return;
+    }
+    this.seatSignature = signature;
+    for (const reu of this.reus) {
+      reu.dispose();
+      descartarObjeto(reu.group);
+    }
+    this.reus = [];
+    this.reuPorId.clear();
+    this.nomePorId.clear();
+    this.juizReu = null;
+    this.selfReu = null;
+
+    view.seats.forEach((seat, index) => {
+      const reu = new Reu(seat.name, avatarColor(seat.id || index + 1), {
+        juiz: seat.isJudge,
+        manequim: !seat.connected,
+        appearance: seat.appearance,
+      });
+      const raio = 5.15;
+      reu.group.position.set(
+        Math.sin(seat.azimuthRad) * raio,
+        0,
+        Math.cos(seat.azimuthRad) * raio
+      );
+      reu.group.lookAt(0, 0, 0);
+      this.scene.add(reu.group);
+      this.reus.push(reu);
+      this.reuPorId.set(seat.id, reu);
+      this.nomePorId.set(seat.id, seat.name);
+      if (seat.isJudge) this.juizReu = reu;
+    });
+    const selfSeat = view.seats.find((seat) => seat.isSelf);
+    this.selfReu = selfSeat ? (this.reuPorId.get(selfSeat.id) ?? null) : null;
+    if (this.selfReu) this.selfReu.group.visible = this.atoAtual !== 'pov';
+    this.posicionarMartelo(view.seats, view.judgeId);
   }
 
   // ── Ferramentas internas de calibração (sem painel na UI final) ────────────
@@ -686,8 +799,8 @@ export class RetroMesa {
    * a fala acompanha a rotação da câmera e não depende da UI da página.
    */
   mostrarFala(nomeAutor: string, texto: string, duracao = 2.6): boolean {
-    const autor = this.reus.find((r) => r.nome === nomeAutor);
     const vemDaCadeiraPov = nomeAutor === 'VOCÊ';
+    const autor = vemDaCadeiraPov ? this.selfReu : this.reus.find((r) => r.nome === nomeAutor);
     const fala = texto.trim();
     if ((!autor && !vemDaCadeiraPov) || !fala) return false;
     // O próprio assento fica colado ao near plane desta câmera. No POV a
@@ -749,6 +862,63 @@ export class RetroMesa {
     return true;
   }
 
+  falarJogador(playerId: number, texto: string, duracao = 2.6): boolean {
+    if (playerId === this.selfId) return this.mostrarFala('VOCÊ', texto, duracao);
+    const nome = this.nomePorId.get(playerId);
+    return nome ? this.mostrarFala(nome, texto, duracao) : false;
+  }
+
+  reagirJogador(playerId: number, emoji: string, duracao = 1.8): boolean {
+    if (playerId === this.selfId) return this.reagir('VOCÊ', emoji, duracao);
+    const nome = this.nomePorId.get(playerId);
+    return nome ? this.reagir(nome, emoji, duracao) : false;
+  }
+
+  /** Projétil multiplayer com origem e alvo reais, inclusive a lente do POV. */
+  arremessarEntre(sourceId: number, targetId: number, tipo: Reacao3D): boolean {
+    const autor = this.reuPorId.get(sourceId);
+    const alvo = this.reuPorId.get(targetId);
+    const sourceIsSelf = sourceId === this.selfId;
+    const targetIsSelf = targetId === this.selfId;
+    if ((!autor && !sourceIsSelf) || (!alvo && !targetIsSelf)) return false;
+    if (this.reacoesVoo.length >= 8) {
+      const antiga = this.reacoesVoo.shift();
+      if (antiga) descartarObjeto(antiga.group);
+    }
+    const group = this.criarObjetoReacao(tipo);
+    const inicio = autor
+      ? autor.group.position.clone().multiplyScalar(0.86).setY(1.18)
+      : new THREE.Vector3(0, 1.2, 4.35);
+    const fim = alvo
+      ? alvo.group.position.clone().multiplyScalar(0.92).setY(1.1)
+      : new THREE.Vector3(0, 1.45, 4.72);
+    const controle = inicio.clone().lerp(fim, 0.5).setY(3.0);
+    group.position.copy(inicio);
+    this.scene.add(group);
+    this.reacoesVoo.push({
+      group,
+      inicio,
+      controle,
+      fim,
+      t0: this.timer.getElapsed(),
+      dur: this.reducedMotion ? 0.45 : 0.75,
+      giro: new THREE.Vector3(7, 9, 6),
+      aoTerminar: () => {
+        if (alvo) {
+          alvo.receberImpacto(tipo);
+        }
+        if (targetIsSelf) {
+          this.impactoShake = this.reducedMotion ? 0.025 : (tipo === 'rosa' ? 0.035 : 0.18);
+          this.onSelfImpact?.(tipo);
+        }
+        somSoco();
+      },
+    });
+    autor?.acao('festejar');
+    somArremesso();
+    return true;
+  }
+
   /** Balão de laboratório; usa a mesma API que receberá o chat real. */
   testarFala() {
     const falas = ['EU EXIJO JUSTIÇA!', 'ISSO É CALÚNIA.', 'CULPA DO ESTAGIÁRIO.', 'OBJEÇÃO, PORRA!'];
@@ -769,11 +939,17 @@ export class RetroMesa {
     this.controls.target.set(...cfg.alvo);
     this.controls.enableZoom = ato !== 'pov';
     this.controls.enablePan = false;
+    this.controls.rotateSpeed = ato === 'pov' ? 0.35 : 1;
+    this.controls.minAzimuthAngle = ato === 'pov' ? -1.28 : -Infinity;
+    this.controls.maxAzimuthAngle = ato === 'pov' ? 1.28 : Infinity;
     this.controls.minDistance = cfg.dist[0];
     this.controls.maxDistance = cfg.dist[1];
     this.controls.minPolarAngle = cfg.polar[0];
     this.controls.maxPolarAngle = cfg.polar[1];
-    this.lampadaVisual.visible = ato !== 'cima';
+    // O objeto pendurado só entra nos planos largos. Nos planos de prova/POV
+    // ele cruzava o rosto dos réus e o relógio; a luz continua funcionando.
+    this.lampadaVisual.visible = ato === 'juiz';
+    if (this.selfReu) this.selfReu.group.visible = ato !== 'pov';
     if (ato === 'pov') this.povAnchor.copy(this.camera.position);
     this.aplicarFov();
     this.controls.update();
@@ -877,6 +1053,7 @@ export class RetroMesa {
     }
     this.culpadoT = -1;
     this.spotCulpado.intensity = 0;
+    this.verdictProofId = null;
   }
 
   private removerCarta(carta: Carta) {
@@ -904,6 +1081,149 @@ export class RetroMesa {
     return true;
   }
 
+  /**
+   * Reconciliador da partida real. Ele só recebe a projeção sanitizada de
+   * `MesaView`: nenhuma mão, voto secreto ou decisão de regra entra no Three.
+   * Pode ser chamado a cada snapshot; apenas as diferenças visuais são refeitas.
+   */
+  syncMesa(view: MesaView) {
+    if (!this.versoTex) return;
+    this.realMode = true;
+    this.selfId = view.selfId;
+    this.presentationPhase = view.phase;
+    this.rebuildSeats(view);
+
+    const durationSeconds = view.phase === 'submitting'
+      ? ('submitSeconds' in view ? Number(view.submitSeconds) : 75)
+      : view.phase === 'judging'
+        ? ('judgeSeconds' in view ? Number(view.judgeSeconds) : 60)
+        : ('resultSeconds' in view ? Number(view.resultSeconds) : 9);
+    const endsAt = 'phaseEndsAt' in view && Number(view.phaseEndsAt) > 0
+      ? Number(view.phaseEndsAt)
+      : view.phaseStartedAt + durationSeconds * 1000;
+    this.setDeadline(endsAt, durationSeconds * 1000);
+
+    const nextRoundSignature = `${view.round}:${view.blackCard?.id ?? 'none'}`;
+    if (nextRoundSignature !== this.roundSignature) {
+      this.roundSignature = nextRoundSignature;
+      this.limparVeredito();
+      this.clearProofBundles();
+      if (this.cartaPreta) {
+        this.removerCarta(this.cartaPreta);
+        this.cartaPreta = null;
+      }
+      if (view.blackCard) {
+        const preta = this.criarCarta(view.blackCard.text, true);
+        preta.group.position.set(0, 0.09, -0.4);
+        preta.group.rotation.y = 0.06;
+        preta.fixarBase();
+        this.cartaPreta = preta;
+        this.entrarDoAlto(preta, 0.08);
+      }
+    }
+
+    this.syncProofBundles(view.proofs, view.round, view.phase === 'judging');
+    const winning = view.proofs.find((proof) => proof.isWinner);
+    if (winning && view.phase !== 'judging' && this.verdictProofId !== winning.id) {
+      this.martelada(undefined, winning.id);
+    }
+  }
+
+  private setDeadline(endsAt: number, durationMs: number) {
+    this.deadlineEndsAt = Number.isFinite(endsAt) ? endsAt : 0;
+    this.deadlineDurationMs = Math.max(1, Number.isFinite(durationMs) ? durationMs : 1);
+  }
+
+  private proofSlot(index: number, total: number, round: number) {
+    // O anel tem rotação por rodada e nunca acompanha o azimute dos autores.
+    // Isso impede deduzir autoria pela cadeira mesmo observando várias rodadas.
+    const seed = ((round * 2654435761) >>> 0) / 0xffffffff;
+    const offset = -Math.PI / 2 + seed * Math.PI * 2;
+    const angle = offset + (Math.PI * 2 * index) / Math.max(1, total);
+    const radius = total <= 4 ? 1.75 : 2.2;
+    return { angle, pos: new THREE.Vector3(Math.sin(angle) * radius, 0.025, Math.cos(angle) * radius) };
+  }
+
+  private proofVisualSignature(proof: MesaProofView): string {
+    return [
+      proof.state,
+      proof.cardCount,
+      proof.cards.map((card) => card.text).join('\u241f'),
+      proof.owner?.id ?? '',
+      proof.isWinner ? 1 : 0,
+    ].join(':');
+  }
+
+  private createProofBundle(
+    proof: MesaProofView,
+    proofIndex: number,
+    proofTotal: number,
+    round: number,
+    animateReveal: boolean
+  ): Carta[] {
+    if (!this.versoTex) return [];
+    const slot = this.proofSlot(proofIndex, proofTotal, round);
+    const count = Math.max(1, proof.cardCount || proof.cards.length || 1);
+    const cards: Carta[] = [];
+    for (let cardIndex = 0; cardIndex < count; cardIndex++) {
+      const cardView = proof.cards[cardIndex];
+      const frente: THREE.Texture = cardView ? drawCardTexture(cardView.text, false) : this.versoTex;
+      if (frente !== this.versoTex) this.texturas.push(frente);
+      const carta = new Carta(frente, this.versoTex, COR.paper);
+      carta.texto = cardView?.text ?? '';
+      carta.autor = proof.owner?.name ?? '';
+      const lateral = (cardIndex - (count - 1) / 2) * 0.18;
+      carta.group.position.copy(slot.pos);
+      carta.group.position.x += Math.cos(slot.angle) * lateral;
+      carta.group.position.z -= Math.sin(slot.angle) * lateral;
+      carta.group.position.y += cardIndex * 0.008;
+      carta.group.rotation.y = slot.angle + (cardIndex - (count - 1) / 2) * 0.045;
+      if (proof.state === 'sealed' || animateReveal) carta.deitarVirada();
+      carta.fixarBase();
+      this.scene.add(carta.group);
+      this.cartas.push(carta);
+      this.provas.push(carta);
+      this.proofByCard.set(carta, proof.id);
+      cards.push(carta);
+      if (proof.state === 'revealed' && animateReveal) carta.flip();
+    }
+    return cards;
+  }
+
+  private syncProofBundles(proofs: readonly MesaProofView[], round: number, animateReveal: boolean) {
+    const ids = new Set(proofs.map((proof) => proof.id));
+    for (const [proofId, cards] of this.proofBundles) {
+      if (ids.has(proofId)) continue;
+      for (const card of cards) this.removerProofCard(card);
+      this.proofBundles.delete(proofId);
+      this.proofStateSignatures.delete(proofId);
+    }
+
+    proofs.forEach((proof, proofIndex) => {
+      const signature = this.proofVisualSignature(proof);
+      if (this.proofStateSignatures.get(proof.id) === signature) return;
+      const old = this.proofBundles.get(proof.id) ?? [];
+      for (const card of old) this.removerProofCard(card);
+      const bundle = this.createProofBundle(proof, proofIndex, proofs.length, round, animateReveal);
+      this.proofBundles.set(proof.id, bundle);
+      this.proofStateSignatures.set(proof.id, signature);
+    });
+  }
+
+  private removerProofCard(card: Carta) {
+    this.provas = this.provas.filter((item) => item !== card);
+    this.proofByCard.delete(card);
+    this.removerCarta(card);
+  }
+
+  private clearProofBundles() {
+    const cards = [...this.proofBundles.values()].flat();
+    for (const card of cards) this.removerProofCard(card);
+    this.proofBundles.clear();
+    this.proofStateSignatures.clear();
+    this.verdictProofId = null;
+  }
+
   /** Arremesso COM ALVO: da sua cadeira até o réu escolhido (roda de emotes). */
   arremessarEm(nomeAlvo: string, tipo: Reacao3D): boolean {
     const alvo = this.reus.find((r) => r.nome === nomeAlvo);
@@ -929,8 +1249,7 @@ export class RetroMesa {
       dur: 0.7,
       giro: new THREE.Vector3(6 + Math.random() * 4, 8, 5),
       aoTerminar: () => {
-        alvo.setExpressao(tipo === 'rosa' ? 'riso' : 'choque');
-        if (tipo !== 'rosa') alvo.acao('facepalm');
+        alvo.receberImpacto(tipo);
         somSoco();
       },
     });
@@ -949,10 +1268,11 @@ export class RetroMesa {
 
   /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake, spotlight
    *  vermelho e carimbo CULPADO esmagando a prova sorteada. */
-  martelada(onCulpado?: (nome: string) => void) {
+  martelada(onCulpado?: (nome: string) => void, proofId?: string) {
     if (this.marteloT < 0) {
       this.marteloT = 0;
       this.onCulpadoCb = onCulpado ?? null;
+      this.verdictProofId = proofId ?? null;
       this.frisoMat.color.setHex(COR.red);
       this.recorteVermelho.intensity = 0.7;
       // limpa o veredito anterior
@@ -965,9 +1285,10 @@ export class RetroMesa {
     }
   }
 
-  /** No impacto do martelo: sorteia a prova culpada, acende e carimba. */
+  /** No impacto do martelo: usa o veredito do host; sorteio só no laboratório. */
   private condenar() {
-    const alvo = this.provas[Math.floor(Math.random() * this.provas.length)];
+    const bundle = this.verdictProofId ? this.proofBundles.get(this.verdictProofId) : null;
+    const alvo = bundle?.[0] ?? this.provas[Math.floor(Math.random() * this.provas.length)];
     if (!alvo) return;
     if (!alvo.viradaPraCima) alvo.flip();
     const pos = alvo.group.position;
@@ -989,10 +1310,10 @@ export class RetroMesa {
     this.onCulpadoCb?.(alvo.autor || 'ALGUÉM');
   }
 
-  private montarCartas(pretas: string[], brancas: string[]) {
+  private montarCartas(pretas: string[], brancas: string[], realMode = false) {
     this.versoTex = drawBackTexture();
     this.texturas.push(this.versoTex);
-    this.montarRodada(pretas[0] ?? 'Cadê a carta preta?', brancas, 0);
+    if (!realMode) this.montarRodada(pretas[0] ?? 'Cadê a carta preta?', brancas, 0);
 
     // pilha de compra, afastada do anel
     const pilha = new Carta(this.versoTex, this.versoTex, COR.ink);
@@ -1167,6 +1488,14 @@ export class RetroMesa {
     else pararAmbiente();
   }
 
+  setReducedMotion(reduced: boolean) {
+    this.reducedMotion = reduced;
+    if (reduced) {
+      this.shake = 0;
+      this.impactoShake = 0;
+    }
+  }
+
   setPixelSize(px: number) {
     this.pixelSize = Math.max(1, Math.round(px));
     this.resize();
@@ -1200,7 +1529,13 @@ export class RetroMesa {
     this.pendulo.rotation.z = Math.sin(t * 0.9) * 0.05;
     this.pendulo.rotation.x = Math.sin(t * 0.63 + 1.7) * 0.035;
     let fator = 0.94 + 0.06 * Math.sin(t * 31) * Math.sin(t * 17.3);
-    if (t > this.blinkAte && Math.random() < 0.002) {
+    const deadlineRestante = this.deadlineEndsAt > 0 ? this.deadlineEndsAt - Date.now() : Infinity;
+    const warningWindow = Math.min(10_000, this.deadlineDurationMs * 0.25);
+    if (deadlineRestante > 0 && deadlineRestante <= warningWindow) {
+      const pressa = 1 - deadlineRestante / warningWindow;
+      fator *= 0.9 + Math.max(0, Math.sin(t * (5 + pressa * 9))) * (0.1 + pressa * 0.12);
+    }
+    if (!this.reducedMotion && t > this.blinkAte && Math.random() < 0.002) {
       this.blinkAte = t + 0.07 + Math.random() * 0.12;
       somZap();
     }
@@ -1210,7 +1545,7 @@ export class RetroMesa {
     (this.bulbo.material as THREE.MeshBasicMaterial).color.setHex(fator < 0.5 ? 0x55504a : 0xfff4e0);
 
     // os réus vivem: respiração + caos aleatório (expressões e ações)
-    if (t > this.proximoCaos) {
+    if ((this.presentationPhase === 'lab' || this.presentationPhase === 'submitting') && t > this.proximoCaos) {
       this.proximoCaos = t + 1.2 + Math.random() * 2.8;
       const vivos = this.reus.filter((r) => !r.manequim);
       const alvo = vivos[Math.floor(Math.random() * vivos.length)];
@@ -1333,16 +1668,24 @@ export class RetroMesa {
     }
 
     // screen shake do veredito — 1 frame de violência, decai rápido
-    if (this.shake > 0.003) {
-      this.camera.position.x += (Math.random() - 0.5) * this.shake;
-      this.camera.position.y += (Math.random() - 0.5) * this.shake;
+    const shakeStrength = Math.max(this.shake, this.impactoShake);
+    this.shakeOffset.set(0, 0, 0);
+    if (shakeStrength > 0.003) {
+      this.shakeOffset.set(
+        (Math.random() - 0.5) * shakeStrength,
+        (Math.random() - 0.5) * shakeStrength,
+        (Math.random() - 0.5) * shakeStrength * 0.25
+      );
+      this.camera.position.add(this.shakeOffset);
       this.shake *= Math.exp(-dt * 9);
+      this.impactoShake *= Math.exp(-dt * 12);
     }
 
     // 1º passe: cena → render target pequeno
     this.blitMat.uniforms.uTime.value = t;
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
+    this.camera.position.sub(this.shakeOffset);
     // 2º passe: quad fullscreen com posterização + dithering
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.blitScene, this.blitCam);

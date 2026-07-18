@@ -1,15 +1,149 @@
 import { ALL_BLACK, ALL_WHITE } from './cards';
 import { sanitizeCustomCards } from './customCards';
-import { BlackCard, GameMode, GameState, Player, WhiteCard } from './types';
+import {
+  CULTIST_ACCESSORIES,
+  CULTIST_ACCENTS,
+  CULTIST_FACES,
+  CULTIST_HOODS,
+  CULTIST_ROBES,
+  DEFAULT_CULTIST_APPEARANCE,
+  BlackCard,
+  CultistAppearance,
+  GameMode,
+  GamePhase,
+  GameRules,
+  GameState,
+  Player,
+  TurnLimit,
+  WhiteCard,
+} from './types';
 
 export const HAND_SIZE = 10;
 export const MIN_PLAYERS = 3;
 export const MAX_PLAYERS = 8;
 export const DEFAULT_SCORE_LIMIT = 7;
+export const DEFAULT_TURN_LIMIT: TurnLimit = 1;
 // Relógio da mesa: quem não jogar/julgar até o fim do tempo joga aleatório,
 // pra um AFK nunca travar a rodada.
 export const SUBMIT_SECONDS = 75;
 export const JUDGE_SECONDS = 60;
+export const RESULT_SECONDS = 9;
+
+const MIN_PHASE_SECONDS = 1;
+const MAX_PHASE_SECONDS = 10 * 60;
+let phaseNonce = 0;
+
+function isOneOf<T extends string>(value: unknown, choices: readonly T[]): value is T {
+  return typeof value === 'string' && choices.includes(value as T);
+}
+
+/** Valida customização recebida da rede sem deixar valores arbitrários no 3D. */
+export function normalizeCultistAppearance(value: unknown): CultistAppearance {
+  const candidate = value && typeof value === 'object'
+    ? value as Partial<CultistAppearance>
+    : {};
+  return {
+    robe: isOneOf(candidate.robe, CULTIST_ROBES)
+      ? candidate.robe
+      : DEFAULT_CULTIST_APPEARANCE.robe,
+    hood: isOneOf(candidate.hood, CULTIST_HOODS)
+      ? candidate.hood
+      : DEFAULT_CULTIST_APPEARANCE.hood,
+    face: isOneOf(candidate.face, CULTIST_FACES)
+      ? candidate.face
+      : DEFAULT_CULTIST_APPEARANCE.face,
+    accent: isOneOf(candidate.accent, CULTIST_ACCENTS)
+      ? candidate.accent
+      : DEFAULT_CULTIST_APPEARANCE.accent,
+    accessory: isOneOf(candidate.accessory, CULTIST_ACCESSORIES)
+      ? candidate.accessory
+      : DEFAULT_CULTIST_APPEARANCE.accessory,
+  };
+}
+
+function normalizeTurnLimit(value: unknown): TurnLimit {
+  return value === 2 || value === 3 ? value : DEFAULT_TURN_LIMIT;
+}
+
+function normalizePhaseSeconds(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(MAX_PHASE_SECONDS, Math.max(MIN_PHASE_SECONDS, Math.round(value)));
+}
+
+export function normalizeGameRules(rules: Partial<GameRules> = {}): GameRules {
+  return {
+    turnLimit: normalizeTurnLimit(rules.turnLimit),
+    submitSeconds: normalizePhaseSeconds(rules.submitSeconds, SUBMIT_SECONDS),
+    judgeSeconds: normalizePhaseSeconds(rules.judgeSeconds, JUDGE_SECONDS),
+    resultSeconds: normalizePhaseSeconds(rules.resultSeconds, RESULT_SECONDS),
+  };
+}
+
+/** Reconstitui as regras que não existiam nos snapshots antigos. */
+export function getGameRules(gs: GameState): GameRules {
+  return normalizeGameRules({
+    turnLimit: gs.turnLimit,
+    submitSeconds: gs.submitSeconds,
+    judgeSeconds: gs.judgeSeconds,
+    resultSeconds: gs.resultSeconds,
+  });
+}
+
+export function getRoundLimit(gs: GameState): number {
+  if (Number.isInteger(gs.roundLimit) && (gs.roundLimit ?? 0) > 0) {
+    return gs.roundLimit as number;
+  }
+  return Math.max(1, getActivePlayers(gs.players).length * getGameRules(gs).turnLimit);
+}
+
+export function getWinnerIds(gs: GameState): number[] {
+  const playerIds = new Set(gs.players.map((player) => player.id));
+  const candidates = Array.isArray(gs.winnerIds) && gs.winnerIds.length > 0
+    ? gs.winnerIds
+    : gs.winner
+      ? [gs.winner.id]
+      : [];
+  return [...new Set(candidates.filter((id) => playerIds.has(id)))];
+}
+
+function durationForPhase(phase: GamePhase, rules: GameRules): number | null {
+  if (phase === 'submitting') return rules.submitSeconds;
+  if (phase === 'judging') return rules.judgeSeconds;
+  if (phase === 'round-end') return rules.resultSeconds;
+  return null;
+}
+
+function phaseTiming(
+  phase: GamePhase,
+  round: number,
+  rules: GameRules
+): Pick<GameState, 'phase' | 'phaseId' | 'phaseStartedAt' | 'phaseEndsAt'> {
+  const phaseStartedAt = Date.now();
+  const duration = durationForPhase(phase, rules);
+  phaseNonce += 1;
+  return {
+    phase,
+    phaseId: `r${round}:${phase}:${phaseStartedAt}:${phaseNonce}`,
+    phaseStartedAt,
+    phaseEndsAt: duration === null ? null : phaseStartedAt + duration * 1000,
+  };
+}
+
+export function getPhaseId(gs: GameState): string {
+  return gs.phaseId
+    ?? `legacy:r${gs.round}:${gs.phase}:${Number.isFinite(gs.phaseStartedAt) ? gs.phaseStartedAt : 0}`;
+}
+
+export function getPhaseEndsAt(gs: GameState): number | null {
+  if (gs.phaseEndsAt === null) return null;
+  if (typeof gs.phaseEndsAt === 'number' && Number.isFinite(gs.phaseEndsAt)) {
+    return gs.phaseEndsAt;
+  }
+  const duration = durationForPhase(gs.phase, getGameRules(gs));
+  if (duration === null) return null;
+  const startedAt = Number.isFinite(gs.phaseStartedAt) ? gs.phaseStartedAt : Date.now();
+  return startedAt + duration * 1000;
+}
 
 export function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -101,6 +235,7 @@ export interface Seat {
   id: number;
   name: string;
   isHuman: boolean;
+  appearance?: CultistAppearance;
 }
 
 export function initGame(
@@ -108,11 +243,13 @@ export function initGame(
   scoreLimit: number,
   mode: GameMode = 'judge',
   customBlack: BlackCard[] = [],
-  customWhite: WhiteCard[] = []
+  customWhite: WhiteCard[] = [],
+  ruleOverrides: Partial<GameRules> = {}
 ): GameState {
   const custom = sanitizeCustomCards({ black: customBlack, white: customWhite });
   const blackPool = [...ALL_BLACK, ...custom.black];
   const whitePool = [...ALL_WHITE, ...custom.white];
+  const rules = normalizeGameRules(ruleOverrides);
   // A regra pura também protege a geometria e o protocolo caso um snapshot
   // antigo ou duas entradas concorrentes escapem da validação do lobby.
   const players: Player[] = seats.slice(0, MAX_PLAYERS).map((s) => ({
@@ -123,16 +260,21 @@ export function initGame(
     score: 0,
     hand: [],
     eliminated: false,
+    appearance: normalizeCultistAppearance(s.appearance),
   }));
   // O primeiro juiz é sorteado; na Democracia todo mundo joga e vota.
   const czarId = mode === 'judge'
     ? players[Math.floor(Math.random() * players.length)].id
     : -1;
+  const round = 1;
   const base: GameState = {
-    phase: 'submitting',
+    ...phaseTiming('submitting', round, rules),
     mode,
     players,
-    round: 1,
+    round,
+    turnLimit: rules.turnLimit,
+    roundLimit: getActivePlayers(players).length * rules.turnLimit,
+    suddenDeath: false,
     scoreLimit,
     czarId,
     blackCard: null,
@@ -142,8 +284,12 @@ export function initGame(
     votingRound: 1,
     tieBreak: false,
     revealed: [],
-    phaseStartedAt: Date.now(),
+    submitSeconds: rules.submitSeconds,
+    judgeSeconds: rules.judgeSeconds,
+    resultSeconds: rules.resultSeconds,
+    stateRevision: 0,
     roundWinnerId: null,
+    winnerIds: [],
     winner: null,
     blackPool,
     whitePool,
@@ -182,23 +328,40 @@ export function applySubmission(gs: GameState, playerId: number, cardIds: string
 
 // Embaralha as jogadas ao entrar no julgamento, para o juiz não deduzir o dono
 // pela ordem de chegada.
+function restartCurrentRound(gs: GameState): GameState {
+  const restarted: GameState = {
+    ...gs,
+    ...phaseTiming('submitting', gs.round, getGameRules(gs)),
+    submissions: [],
+    votes: [],
+    votingOptions: [],
+    votingRound: 1,
+    tieBreak: false,
+    revealed: [],
+    roundWinnerId: null,
+    blackCard: null,
+  };
+  return drawBlack(refillHands(restarted));
+}
+
 function startJudging(gs: GameState): GameState {
   if (gs.submissions.length === 0) {
-    // Todo mundo sumiu antes de jogar — pula a rodada.
-    return advanceToNextRound(gs);
+    // Todo mundo sumiu antes de jogar — reinicia sem consumir uma rodada do
+    // limite que o lobby prometeu.
+    return restartCurrentRound(gs);
   }
   const submissions = shuffle(gs.submissions);
   const democracy = getGameMode(gs) === 'democracy';
+  const rules = getGameRules(gs);
   return {
     ...gs,
-    phase: 'judging',
+    ...phaseTiming('judging', gs.round, rules),
     submissions,
     votes: [],
     votingOptions: democracy ? submissions.map((_, index) => index) : [],
     votingRound: 1,
     tieBreak: false,
     revealed: democracy ? submissions.map((_, index) => index) : [],
-    phaseStartedAt: Date.now(),
   };
 }
 
@@ -217,21 +380,22 @@ function finishRound(gs: GameState, index: number, tieBreak = false): GameState 
   const players = gs.players.map((p) =>
     p.id === winning.playerId ? { ...p, score: p.score + 1 } : p
   );
-  const winner = players.find((p) => p.score >= gs.scoreLimit) ?? null;
   return {
     ...gs,
+    ...phaseTiming('round-end', gs.round, getGameRules(gs)),
     players,
     roundWinnerId: winning.playerId,
-    phase: winner ? 'game-end' : 'round-end',
-    winner,
+    winnerIds: [],
+    winner: null,
     tieBreak,
   };
 }
 
 export function applyJudgePick(gs: GameState, index: number): GameState {
   if (gs.phase !== 'judging' || getGameMode(gs) !== 'judge') return gs;
-  // Sem julgamento sumário: só depois de virar todas as provas.
-  if (gs.revealed.length !== gs.submissions.length) return gs;
+  // Sem julgamento sumário: cada índice real precisa ter sido aberto. Só
+  // comparar comprimentos aceitaria duplicatas ou índices órfãos após kick.
+  if (gs.submissions.some((_, proofIndex) => !gs.revealed.includes(proofIndex))) return gs;
   return finishRound(gs, index);
 }
 
@@ -259,10 +423,10 @@ export function applyVote(gs: GameState, voterId: number, index: number): GameSt
   if (tied.length > 1 && voted.votingRound === 1) {
     return {
       ...voted,
+      ...phaseTiming('judging', voted.round, getGameRules(voted)),
       votes: [],
       votingOptions: tied,
       votingRound: 2,
-      phaseStartedAt: Date.now(),
     };
   }
 
@@ -281,12 +445,61 @@ export function nextActiveId(players: Player[], fromId: number): number {
   return fromId;
 }
 
+export function getScoreLeaders(gs: GameState): Player[] {
+  const active = getActivePlayers(gs.players);
+  if (!active.length) return [];
+  const highest = Math.max(...active.map((player) => player.score));
+  return active.filter((player) => player.score === highest);
+}
+
+function hasExplicitRoundLimit(gs: GameState): boolean {
+  return Number.isInteger(gs.roundLimit) && (gs.roundLimit ?? 0) > 0;
+}
+
+/**
+ * A partida só é decidida ao sair do resultado, garantindo que a última
+ * prova permaneça visível durante toda a fase round-end.
+ */
+function winnersAfterResult(gs: GameState): Player[] {
+  if (gs.phase !== 'round-end') return [];
+  const leaders = getScoreLeaders(gs);
+  if (!leaders.length) return [];
+
+  if (hasExplicitRoundLimit(gs)) {
+    if (gs.round < getRoundLimit(gs)) return [];
+    // Depois do limite, qualquer empate mantém a morte súbita viva.
+    return leaders.length === 1 ? leaders : [];
+  }
+
+  // Compatibilidade: snapshots antigos continuam encerrando por pontuação.
+  const highest = leaders[0]?.score ?? 0;
+  return highest >= gs.scoreLimit ? leaders : [];
+}
+
 export function advanceToNextRound(gs: GameState): GameState {
+  if (gs.phase === 'game-end') return gs;
+  const winners = winnersAfterResult(gs);
+  if (winners.length) {
+    const winnerIds = winners.map((player) => player.id);
+    return {
+      ...gs,
+      ...phaseTiming('game-end', gs.round, getGameRules(gs)),
+      winnerIds,
+      // Campo singular para clientes e snapshots v1.
+      winner: winners[0] ?? null,
+    };
+  }
+
   const mode = getGameMode(gs);
+  const reachedRoundLimit = gs.phase === 'round-end'
+    && hasExplicitRoundLimit(gs)
+    && gs.round >= getRoundLimit(gs);
+  const round = gs.round + 1;
   const next: GameState = {
     ...gs,
-    phase: 'submitting',
-    round: gs.round + 1,
+    ...phaseTiming('submitting', round, getGameRules(gs)),
+    round,
+    suddenDeath: Boolean(gs.suddenDeath || reachedRoundLimit),
     czarId: mode === 'judge' ? nextActiveId(gs.players, gs.czarId) : -1,
     submissions: [],
     votes: [],
@@ -294,8 +507,9 @@ export function advanceToNextRound(gs: GameState): GameState {
     votingRound: 1,
     tieBreak: false,
     revealed: [],
-    phaseStartedAt: Date.now(),
     roundWinnerId: null,
+    winnerIds: [],
+    winner: null,
   };
   return drawBlack(refillHands(next));
 }
@@ -319,13 +533,13 @@ function returnSubmissions(gs: GameState): GameState {
   });
   return {
     ...gs,
+    ...phaseTiming('submitting', gs.round, getGameRules(gs)),
     players,
     submissions: [],
     votes: [],
     votingOptions: [],
     votingRound: 1,
     revealed: [],
-    phaseStartedAt: Date.now(),
   };
 }
 
@@ -364,17 +578,29 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
   const remaining = getActivePlayers(players);
   if (remaining.length < MIN_PLAYERS) {
     const winner = [...remaining].sort((a, b) => b.score - a.score)[0] ?? null;
-    return { ...next, players, submissions, phase: 'game-end', winner };
+    return {
+      ...next,
+      ...phaseTiming('game-end', next.round, getGameRules(next)),
+      players,
+      submissions,
+      winnerIds: winner ? [winner.id] : [],
+      winner,
+    };
   }
 
   let czarId = next.czarId;
   if (wasCzar) czarId = nextActiveId(players, playerId);
 
-  // O novo juiz pode já ter carta na mesa — ela volta pra mão dele.
+  // O novo juiz pode já ter carta na mesa — ela volta pra mão dele. Esta
+  // segunda remoção também desloca os índices das provas já abertas.
   if (wasCzar) {
-    const own = submissions.find((s) => s.playerId === czarId);
-    if (own) {
-      submissions = submissions.filter((s) => s.playerId !== czarId);
+    const ownIdx = submissions.findIndex((s) => s.playerId === czarId);
+    const own = ownIdx >= 0 ? submissions[ownIdx] : null;
+    if (own && ownIdx >= 0) {
+      submissions = submissions.filter((_, index) => index !== ownIdx);
+      revealed = revealed
+        .filter((index) => index !== ownIdx)
+        .map((index) => (index > ownIdx ? index - 1 : index));
       players = players.map((p) =>
         p.id === czarId ? { ...p, hand: [...p.hand, ...own.cards] } : p
       );
@@ -388,12 +614,12 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
   if (democracy && next.phase === 'judging') {
     next = {
       ...next,
+      ...phaseTiming('judging', next.round, getGameRules(next)),
       votes: [],
       votingOptions: submissions.map((_, index) => index),
       votingRound: 1,
       tieBreak: false,
       revealed: submissions.map((_, index) => index),
-      phaseStartedAt: Date.now(),
     };
   }
 
@@ -402,13 +628,16 @@ export function removePlayer(gs: GameState, playerId: number): GameState {
     if (waiting.length === 0) return startJudging(next);
   }
   if (next.phase === 'judging' && submissions.length === 0) {
-    return advanceToNextRound(next);
+    return restartCurrentRound(next);
   }
   return next;
 }
 
 // Convidados aprovados no meio do jogo sentam entre uma rodada e outra.
-export function seatNewcomers(gs: GameState, seats: { id: number; name: string }[]): GameState {
+export function seatNewcomers(
+  gs: GameState,
+  seats: { id: number; name: string; appearance?: CultistAppearance }[]
+): GameState {
   const available = Math.max(0, MAX_PLAYERS - getActivePlayers(gs.players).length);
   const occupiedIds = new Set(gs.players.map((player) => player.id));
   const fresh: Player[] = seats
@@ -426,6 +655,7 @@ export function seatNewcomers(gs: GameState, seats: { id: number; name: string }
       score: 0,
       hand: [],
       eliminated: false,
+      appearance: normalizeCultistAppearance(s.appearance),
     }));
   if (!fresh.length) return gs;
   return { ...gs, players: [...gs.players, ...fresh] };

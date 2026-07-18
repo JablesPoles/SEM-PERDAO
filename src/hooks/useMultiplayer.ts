@@ -1,6 +1,15 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChatMessage, GameMode, GameState, PlayerAction, Reaction } from '../lib/types';
+import {
+  ChatMessage,
+  CultistAppearance,
+  DEFAULT_CULTIST_APPEARANCE,
+  GameState,
+  LobbyPlayer,
+  LobbyRules,
+  PlayerAction,
+  Reaction,
+} from '../lib/types';
 import { CustomCards, sanitizeCustomCards } from '../lib/customCards';
 import { supabase } from '../lib/supabase';
 import {
@@ -10,8 +19,11 @@ import {
   applySubmission,
   applyVote,
   canRequestNextRound,
+  DEFAULT_SCORE_LIMIT,
+  DEFAULT_TURN_LIMIT,
   getActivePlayers,
   getGameMode,
+  getPhaseId,
   hasAvailableSeat,
   initGame,
   JUDGE_SECONDS,
@@ -20,10 +32,13 @@ import {
   pendingSubmitters,
   pendingVoters,
   removePlayer,
+  RESULT_SECONDS,
   Seat,
   seatNewcomers,
   shuffle,
   SUBMIT_SECONDS,
+  normalizeCultistAppearance,
+  normalizeGameRules,
   votingChoicesFor,
 } from '../lib/game';
 import { ALL_BLACK, ALL_WHITE } from '../lib/cards';
@@ -31,22 +46,19 @@ import { BOT_NAMES, getBotJudgeIndex, getBotSubmission } from '../lib/ai';
 
 export type MultiplayerRole = 'host' | 'guest' | 'connecting';
 
-export interface LobbyPlayer {
-  id: number;
-  name: string;
-  isBot?: boolean;
-}
-
 /** Alguém batendo na porta de um jogo em andamento, esperando o host. */
 export interface PendingJoin {
   clientId: string;
   name: string;
+  appearance: CultistAppearance;
 }
 
-interface UseMultiplayerReturn {
+export interface UseMultiplayerReturn {
   role: MultiplayerRole;
   myPlayerId: number | null;
   lobbyPlayers: LobbyPlayer[];
+  lobbyRules: LobbyRules;
+  countdownEndsAt: number | null;
   gameState: GameState | null;
   isConnected: boolean;
   error: string | null;
@@ -63,7 +75,10 @@ interface UseMultiplayerReturn {
   sendAction: (action: PlayerAction) => void;
   sendChat: (text: string) => void;
   sendReaction: (emoji: string) => void;
-  startGame: (scoreLimit: number, mode: GameMode) => void;
+  startGame: () => void;
+  setReady: (ready: boolean) => void;
+  setAppearance: (appearance: CultistAppearance) => void;
+  updateLobbyRules: (rules: Partial<LobbyRules>) => void;
   addBot: () => void;
   removeBot: (botId: number) => void;
   kickPlayer: (playerId: number) => void;
@@ -79,11 +94,74 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const DISCONNECT_GRACE_MS = 5000;
 // Ids de bot ficam bem acima dos de humanos para nunca colidirem.
 const BOT_ID_BASE = 100;
+const CULTIST_APPEARANCE_KEY = 'sp-cultist-appearance';
+const RITUAL_COUNTDOWN_MS = 3000;
+
+export const DEFAULT_LOBBY_RULES: LobbyRules = Object.freeze({
+  mode: 'judge',
+  turnLimit: DEFAULT_TURN_LIMIT,
+  submitSeconds: SUBMIT_SECONDS,
+  judgeSeconds: JUDGE_SECONDS,
+  resultSeconds: RESULT_SECONDS,
+});
+
+function normalizeLobbyRules(value: unknown): LobbyRules {
+  const candidate = value && typeof value === 'object'
+    ? value as Partial<LobbyRules>
+    : {};
+  return {
+    mode: candidate.mode === 'democracy' ? 'democracy' : 'judge',
+    ...normalizeGameRules(candidate),
+  };
+}
+
+function appearanceForId(id: number): CultistAppearance {
+  const robes: CultistAppearance['robe'][] = ['blood', 'ash', 'midnight', 'moss'];
+  const hoods: CultistAppearance['hood'][] = ['classic', 'spire', 'shrouded'];
+  const faces: CultistAppearance['face'][] = ['void', 'ember', 'grin', 'weeping'];
+  const accents: CultistAppearance['accent'][] = ['bone', 'brass', 'scarlet', 'cyan'];
+  const accessories: CultistAppearance['accessory'][] = ['none', 'chain', 'candle', 'relic'];
+  const seed = Math.abs(id);
+  return {
+    robe: robes[seed % robes.length],
+    hood: hoods[(seed * 3 + 1) % hoods.length],
+    face: faces[(seed * 5 + 2) % faces.length],
+    accent: accents[(seed * 7 + 1) % accents.length],
+    accessory: accessories[(seed * 11 + 3) % accessories.length],
+  };
+}
+
+function readLocalAppearance(): CultistAppearance {
+  if (typeof window === 'undefined') return DEFAULT_CULTIST_APPEARANCE;
+  try {
+    const saved = localStorage.getItem(CULTIST_APPEARANCE_KEY);
+    return normalizeCultistAppearance(saved ? JSON.parse(saved) : null);
+  } catch {
+    return DEFAULT_CULTIST_APPEARANCE;
+  }
+}
+
+function normalizeLobbyPlayer(player: Partial<LobbyPlayer> & Pick<LobbyPlayer, 'id' | 'name'>): LobbyPlayer {
+  return {
+    id: player.id,
+    name: player.name,
+    isBot: player.isBot,
+    ready: player.isBot ? true : player.ready === true,
+    appearance: normalizeCultistAppearance(player.appearance ?? appearanceForId(player.id)),
+  };
+}
+
+function normalizeLobbyPlayers(players: LobbyPlayer[] | null | undefined): LobbyPlayer[] {
+  return (players ?? []).map((player) => normalizeLobbyPlayer(player));
+}
 
 // O relógio visual e os timeouts do host usam a mesma origem. Reagendar após
 // uma jogada/revelação nunca devolve o tempo inteiro para a fase.
 export function remainingPhaseMs(gs: GameState, seconds: number): number {
-  return Math.max(0, gs.phaseStartedAt + seconds * 1000 - Date.now());
+  const deadline = typeof gs.phaseEndsAt === 'number' && Number.isFinite(gs.phaseEndsAt)
+    ? gs.phaseEndsAt
+    : gs.phaseStartedAt + seconds * 1000;
+  return Math.max(0, deadline - Date.now());
 }
 
 /**
@@ -103,17 +181,18 @@ export function redactStateFor(gs: GameState, targetId: number): GameState {
     players: gs.players.map((p) =>
       p.id === targetId ? p : { ...p, hand: [] }
     ),
-    submissions: gs.submissions.map((s) => {
+    submissions: gs.submissions.map((s, index) => {
       if (gs.phase === 'submitting') {
         return { playerId: s.playerId, cards: [] };
       }
       if (gs.phase === 'judging') {
+        const cardsVisible = getGameMode(gs) === 'democracy' || gs.revealed.includes(index);
         return {
           playerId:
             getGameMode(gs) === 'democracy' && s.playerId === targetId
               ? targetId
               : -1,
-          cards: s.cards,
+          cards: cardsVisible ? s.cards : [],
         };
       }
       return s;
@@ -122,6 +201,9 @@ export function redactStateFor(gs: GameState, targetId: number): GameState {
       gs.phase === 'judging'
         ? gs.votes.map((vote) => ({ ...vote, submissionIndex: -1 }))
         : gs.votes,
+    // `winner` é um atalho legado e não pode reintroduzir a mão completa que
+    // acabou de ser removida da lista pública de jogadores.
+    winner: gs.winner ? { ...gs.winner, hand: [] } : null,
   };
 }
 
@@ -131,24 +213,29 @@ export function useMultiplayer(
   initialIsHost: boolean,
   customCards: CustomCards
 ): UseMultiplayerReturn {
+  const pidKey = `sp-pid-${roomCode}`;
+  const hostStateKey = `sp-host-state-${roomCode}`;
+  const hostLobbyKey = `sp-host-lobby-${roomCode}`;
+  const initialHostPlayerId = initialIsHost && typeof window !== 'undefined'
+    ? Number(sessionStorage.getItem(pidKey) ?? 0)
+    : 0;
+
   // Quem comanda a mesa pode mudar no meio do jogo: se o host sair, o próximo
   // pela ordem de entrada assume. Handlers leem refs para a promoção não
   // precisar derrubar e reerguer o canal.
   const [isHost, setIsHost] = useState(initialIsHost);
   const isHostRef = useRef(initialIsHost);
-  const [hostId, setHostId] = useState(0);
-  const hostIdRef = useRef(0);
+  const [hostId, setHostId] = useState(
+    Number.isFinite(initialHostPlayerId) ? initialHostPlayerId : 0
+  );
+  const hostIdRef = useRef(hostId);
   const [becameHost, setBecameHost] = useState(false);
   useEffect(() => { isHostRef.current = isHost; }, [isHost]);
   useEffect(() => { hostIdRef.current = hostId; }, [hostId]);
 
-  const pidKey = `sp-pid-${roomCode}`;
-  const hostStateKey = `sp-host-state-${roomCode}`;
-  const hostLobbyKey = `sp-host-lobby-${roomCode}`;
-
   // Convidados lembram o assento entre reloads: F5 volta pro mesmo jogo.
   const [myPlayerId, setMyPlayerId] = useState<number | null>(() => {
-    if (isHost) return 0;
+    if (isHost) return Number.isFinite(initialHostPlayerId) ? initialHostPlayerId : 0;
     if (typeof window !== 'undefined') {
       const saved = sessionStorage.getItem(pidKey);
       if (saved !== null && !Number.isNaN(Number(saved))) return Number(saved);
@@ -159,13 +246,26 @@ export function useMultiplayer(
   // O host restaura um jogo em andamento após reload, pra um F5 não matar a
   // mesa de todo mundo.
   const [restoredHost] = useState(() => {
-    const empty = { game: null as GameState | null, lobby: null as LobbyPlayer[] | null, nextPlayerId: 1 };
+    const empty = {
+      game: null as GameState | null,
+      lobby: null as LobbyPlayer[] | null,
+      rules: DEFAULT_LOBBY_RULES,
+      countdownEndsAt: null as number | null,
+      lobbySeq: 0,
+      nextPlayerId: 1,
+    };
     if (!isHost || typeof window === 'undefined') return empty;
     try {
       const savedGame = sessionStorage.getItem(hostStateKey);
       const savedLobby = sessionStorage.getItem(hostLobbyKey);
       const meta = savedLobby
-        ? (JSON.parse(savedLobby) as { lobby: LobbyPlayer[]; nextPlayerId: number })
+        ? (JSON.parse(savedLobby) as {
+            lobby: LobbyPlayer[];
+            rules?: LobbyRules;
+            countdownEndsAt?: number | null;
+            lobbySeq?: number;
+            nextPlayerId: number;
+          })
         : null;
       // Snapshot de versão antiga pode não ter os campos novos — completa.
       const parsed = savedGame ? (JSON.parse(savedGame) as GameState) : null;
@@ -182,6 +282,7 @@ export function useMultiplayer(
             players: parsed.players.map((player) => ({
               ...player,
               connected: player.connected ?? true,
+              appearance: normalizeCultistAppearance(player.appearance),
             })),
             blackPool: parsed.blackPool?.length ? parsed.blackPool : ALL_BLACK,
             whitePool: parsed.whitePool?.length ? parsed.whitePool : ALL_WHITE,
@@ -189,7 +290,13 @@ export function useMultiplayer(
         : null;
       return {
         game,
-        lobby: meta?.lobby ?? null,
+        lobby: meta?.lobby ? normalizeLobbyPlayers(meta.lobby) : null,
+        rules: normalizeLobbyRules(meta?.rules),
+        countdownEndsAt:
+          typeof meta?.countdownEndsAt === 'number' && Number.isFinite(meta.countdownEndsAt)
+            ? meta.countdownEndsAt
+            : null,
+        lobbySeq: Number.isInteger(meta?.lobbySeq) ? Math.max(0, meta!.lobbySeq!) : 0,
         nextPlayerId: meta?.nextPlayerId ?? 1,
       };
     } catch {
@@ -198,7 +305,18 @@ export function useMultiplayer(
   });
 
   const [lobbyPlayers, setLobbyPlayers] = useState<LobbyPlayer[]>(
-    restoredHost.lobby ?? (isHost && playerName ? [{ id: 0, name: playerName }] : [])
+    restoredHost.lobby ?? (isHost && playerName
+      ? [normalizeLobbyPlayer({
+          id: Number.isFinite(initialHostPlayerId) ? initialHostPlayerId : 0,
+          name: playerName,
+          ready: false,
+          appearance: readLocalAppearance(),
+        })]
+      : [])
+  );
+  const [lobbyRules, setLobbyRules] = useState<LobbyRules>(restoredHost.rules);
+  const [countdownEndsAt, setCountdownEndsAt] = useState<number | null>(
+    restoredHost.countdownEndsAt
   );
   const [gameState, setGameState] = useState<GameState | null>(restoredHost.game);
   const [isConnected, setIsConnected] = useState(false);
@@ -217,6 +335,11 @@ export function useMultiplayer(
   const clientIdRef = useRef(clientId);
   const pendingNextRoundRef = useRef<Set<number>>(new Set());
   const lobbyPlayersRef = useRef<LobbyPlayer[]>(lobbyPlayers);
+  const lobbyRulesRef = useRef<LobbyRules>(lobbyRules);
+  const countdownEndsAtRef = useRef<number | null>(countdownEndsAt);
+  const localAppearanceRef = useRef<CultistAppearance>(
+    lobbyPlayers.find((player) => player.id === myPlayerId)?.appearance ?? readLocalAppearance()
+  );
   const myPlayerIdRef = useRef<number | null>(myPlayerId);
   const isConnectedRef = useRef(false);
   const customCardsRef = useRef(customCards);
@@ -224,8 +347,8 @@ export function useMultiplayer(
   // clientId → playerId: retries de `join` não criam jogador duplicado.
   const clientPlayerMapRef = useRef<Map<string, number>>(new Map());
   // Sequência do lobby: broadcast atrasado não sobrescreve estado mais novo.
-  const lobbySeqRef = useRef(0);
-  const lastLobbySeqRef = useRef(0);
+  const lobbySeqRef = useRef(restoredHost.lobbySeq);
+  const lastLobbySeqRef = useRef(-1);
 
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Relógios do host: bots + limite de tempo dos humanos.
@@ -233,7 +356,7 @@ export function useMultiplayer(
   const scheduleBotRef = useRef<(gs: GameState) => void>(() => {});
   const disconnectTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const pendingJoinsRef = useRef<PendingJoin[]>([]);
-  const pendingSeatsRef = useRef<{ id: number; name: string }[]>([]);
+  const pendingSeatsRef = useRef<{ id: number; name: string; appearance: CultistAppearance }[]>([]);
   const awaitingApprovalRef = useRef(false);
   const gameStateRef = useRef<GameState | null>(restoredHost.game);
   const maybePromoteSelfRef = useRef<(goneHostId: number) => void>(() => {});
@@ -243,6 +366,8 @@ export function useMultiplayer(
   useEffect(() => { pendingJoinsRef.current = pendingJoins; }, [pendingJoins]);
   useEffect(() => { awaitingApprovalRef.current = awaitingApproval; }, [awaitingApproval]);
   useEffect(() => { lobbyPlayersRef.current = lobbyPlayers; }, [lobbyPlayers]);
+  useEffect(() => { lobbyRulesRef.current = lobbyRules; }, [lobbyRules]);
+  useEffect(() => { countdownEndsAtRef.current = countdownEndsAt; }, [countdownEndsAt]);
   useEffect(() => { myPlayerIdRef.current = myPlayerId; }, [myPlayerId]);
   useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
   useEffect(() => { customCardsRef.current = customCards; }, [customCards]);
@@ -260,32 +385,68 @@ export function useMultiplayer(
   }, [send]);
 
   const broadcastLobby = useCallback((players: LobbyPlayer[]) => {
-    send('lobby', { players, seq: lobbySeqRef.current });
+    send('lobby', {
+      players,
+      rules: lobbyRulesRef.current,
+      countdownEndsAt: countdownEndsAtRef.current,
+      seq: lobbySeqRef.current,
+    });
   }, [send]);
 
   const persistHostLobby = useCallback(() => {
     try {
       sessionStorage.setItem(hostLobbyKey, JSON.stringify({
         lobby: lobbyPlayersRef.current,
+        rules: lobbyRulesRef.current,
+        countdownEndsAt: countdownEndsAtRef.current,
+        lobbySeq: lobbySeqRef.current,
         nextPlayerId: nextPlayerIdRef.current,
       }));
     } catch { /* storage cheio/indisponível — persistência é melhor esforço */ }
   }, [hostLobbyKey]);
 
+  const commitLobby = useCallback((
+    players: LobbyPlayer[],
+    options: { rules?: LobbyRules; countdownEndsAt?: number | null } = {}
+  ) => {
+    const normalizedPlayers = normalizeLobbyPlayers(players);
+    const nextRules = options.rules ?? lobbyRulesRef.current;
+    const nextCountdown = options.countdownEndsAt === undefined
+      ? countdownEndsAtRef.current
+      : options.countdownEndsAt;
+
+    lobbyPlayersRef.current = normalizedPlayers;
+    lobbyRulesRef.current = nextRules;
+    countdownEndsAtRef.current = nextCountdown;
+    setLobbyPlayers(normalizedPlayers);
+    setLobbyRules(nextRules);
+    setCountdownEndsAt(nextCountdown);
+    lobbySeqRef.current++;
+    broadcastLobby(normalizedPlayers);
+    persistHostLobby();
+  }, [broadcastLobby, persistHostLobby]);
+
   // Novo estado autoritativo no host: guarda, renderiza, transmite, persiste
   // e agenda os relógios (bots + timeouts).
   const commitHostState = useCallback((gs: GameState) => {
-    hostGameRef.current = gs;
-    setGameState(gs);
-    broadcastState(gs);
+    const currentRevision = hostGameRef.current?.stateRevision ?? -1;
+    const incomingRevision = gs.stateRevision ?? currentRevision;
+    const committed: GameState = {
+      ...gs,
+      stateRevision: Math.max(currentRevision, incomingRevision) + 1,
+    };
+    hostGameRef.current = committed;
+    gameStateRef.current = committed;
+    setGameState(committed);
+    broadcastState(committed);
     try {
-      if (gs.phase === 'game-end') {
+      if (committed.phase === 'game-end') {
         sessionStorage.removeItem(hostStateKey);
       } else {
-        sessionStorage.setItem(hostStateKey, JSON.stringify(gs));
+        sessionStorage.setItem(hostStateKey, JSON.stringify(committed));
       }
     } catch { /* melhor esforço */ }
-    scheduleBotRef.current(gs);
+    scheduleBotRef.current(committed);
   }, [broadcastState, hostStateKey]);
 
   const setPlayerConnected = useCallback((playerId: number, connected: boolean) => {
@@ -321,9 +482,44 @@ export function useMultiplayer(
     );
   }, []);
 
+  const applyLobbyReady = useCallback((playerId: number, ready: boolean) => {
+    if (!isHostRef.current || hostGameRef.current) return;
+    const current = lobbyPlayersRef.current;
+    const player = current.find((candidate) => candidate.id === playerId);
+    if (!player || player.isBot || player.ready === ready) return;
+    commitLobby(
+      current.map((candidate) => candidate.id === playerId
+        ? { ...candidate, ready }
+        : candidate),
+      { countdownEndsAt: ready ? countdownEndsAtRef.current : null }
+    );
+  }, [commitLobby]);
+
+  const applyLobbyAppearance = useCallback((
+    playerId: number,
+    appearance: CultistAppearance
+  ) => {
+    if (!isHostRef.current || hostGameRef.current) return;
+    const current = lobbyPlayersRef.current;
+    const player = current.find((candidate) => candidate.id === playerId);
+    if (!player || player.isBot) return;
+    const normalized = normalizeCultistAppearance(appearance);
+    if (JSON.stringify(player.appearance) === JSON.stringify(normalized)) return;
+    commitLobby(
+      current.map((candidate) => candidate.id === playerId
+        ? { ...candidate, appearance: normalized, ready: false }
+        : candidate),
+      { countdownEndsAt: null }
+    );
+  }, [commitLobby]);
+
   const applyHostAction = useCallback((action: PlayerAction, fromPlayerId: number) => {
     let gs = hostGameRef.current;
     if (!gs) return;
+    const before = gs;
+    // Broadcast atrasado de uma fase anterior nunca atravessa o ritual atual.
+    // `phaseId` continua opcional para aceitar clientes/snapshots v1.
+    if (action.phaseId && action.phaseId !== getPhaseId(gs)) return;
 
     if (action.type === 'submit') {
       if (gs.phase !== 'submitting') return;
@@ -358,6 +554,9 @@ export function useMultiplayer(
       }
     }
 
+    // Ação inválida/duplicada não publica uma falsa mutação nem rearma um
+    // timeout já vencido em loop de 0 ms.
+    if (gs === before) return;
     commitHostState(gs);
   }, [commitHostState]);
 
@@ -465,11 +664,11 @@ export function useMultiplayer(
             const cur = hostGameRef.current;
             if (!cur || cur.phase !== 'judging' || cur.czarId !== czar.id) return;
             if (!cur.revealed.includes(idx)) applyHostAction({ type: 'reveal', index: idx }, czar.id);
-          }, 1100 + k * 1300));
+          }, 1200 + k * 2800));
         });
         const pickDelay = unrevealed.length === 0
           ? 2000
-          : 1100 + unrevealed.length * 1300 + 1800;
+          : 1200 + unrevealed.length * 2800 + 2200;
         botTimersRef.current.push(setTimeout(() => {
           const cur = hostGameRef.current;
           if (!cur || cur.phase !== 'judging' || cur.czarId !== czar.id) return;
@@ -504,7 +703,7 @@ export function useMultiplayer(
           pendingSeatsRef.current = [];
         }
         commitHostState(advanceToNextRound(next));
-      }, 9000));
+      }, remainingPhaseMs(gs, RESULT_SECONDS)));
     }
   }, [applyHostAction, clearBotTimers, commitHostState]);
 
@@ -542,26 +741,45 @@ export function useMultiplayer(
     setBecameHost(true);
     hostIdRef.current = myId;
     setHostId(myId);
-    try { sessionStorage.setItem('sp-host-room', roomCode); } catch { /* melhor esforço */ }
+    try {
+      sessionStorage.setItem('sp-host-room', roomCode);
+      sessionStorage.setItem(pidKey, String(myId));
+    } catch { /* melhor esforço */ }
 
     // Bots viviam no host antigo; sem o estado deles, saem junto. O assento do
-    // host antigo fica reservado e offline para ele poder voltar depois.
-    const lobby = lobbyPlayersRef.current.filter((lp) => !lp.isBot);
-    lobbyPlayersRef.current = lobby;
-    setLobbyPlayers(lobby);
+    // host antigo só fica reservado durante uma partida. No lobby ele libera o
+    // banco, senão um pronto fantasma poderia bloquear o ritual para sempre.
+    const gs = gameStateRef.current;
+    const gameOn = !!gs && gs.phase !== 'game-end' && gs.phase !== 'setup';
+    const lobby = lobbyPlayersRef.current.filter(
+      (lp) => !lp.isBot && (gameOn || lp.id !== goneHostId)
+    );
     nextPlayerIdRef.current = Math.max(nextPlayerIdRef.current, ...lobby.map((l) => l.id + 1), 1);
+    commitLobby(lobby, { countdownEndsAt: null });
 
     send('host_changed', { hostId: myId, name: playerName });
 
-    const gs = gameStateRef.current;
-    if (gs && gs.phase !== 'game-end' && gs.phase !== 'setup') {
+    if (gs && gameOn) {
       const players = gs.players
         .filter((p) => p.isHuman)
         .map((p) => ({ ...p, connected: present.has(p.id), hand: [] }));
       const remaining = getActivePlayers(players);
       if (remaining.length < MIN_PLAYERS) {
         const winner = [...remaining].sort((a, b) => b.score - a.score)[0] ?? null;
-        commitHostState({ ...gs, players, phase: 'game-end', winner, submissions: [], blackDeck: [], whiteDeck: [] });
+        const endedAt = Date.now();
+        commitHostState({
+          ...gs,
+          players,
+          phase: 'game-end',
+          phaseId: `migration:game-end:${endedAt}`,
+          phaseStartedAt: endedAt,
+          phaseEndsAt: null,
+          winnerIds: winner ? [winner.id] : [],
+          winner,
+          submissions: [],
+          blackDeck: [],
+          whiteDeck: [],
+        });
       } else {
         // O pool do host antigo nunca foi enviado (anti-trapaça). Se ele não
         // estiver disponível, o novo host usa seu baralho local e recupera
@@ -580,6 +798,22 @@ export function useMultiplayer(
         const whitePool = gs.whitePool?.length
           ? gs.whitePool
           : dedupe([...ALL_WHITE, ...local.white, ...visibleWhite]);
+        const recovered: GameState = {
+          ...gs,
+          players,
+          blackPool,
+          whitePool,
+          blackDeck: shuffle(blackPool),
+          whiteDeck: shuffle(whitePool),
+        };
+
+        // O ponto do round-end já foi aplicado. Avança o resultado real para
+        // não repetir a mesma rodada — inclusive sentença final/morte súbita.
+        if (gs.phase === 'round-end') {
+          commitHostState(advanceToNextRound(recovered));
+          return;
+        }
+
         // Redistribui a rodada atual com baralhos novos.
         const mode = getGameMode(gs);
         const czarId = mode === 'democracy'
@@ -588,9 +822,8 @@ export function useMultiplayer(
             ? gs.czarId
             : remaining[0].id;
         const redealt: GameState = {
-          ...gs,
+          ...recovered,
           mode,
-          players,
           czarId,
           submissions: [],
           votes: [],
@@ -600,19 +833,13 @@ export function useMultiplayer(
           roundWinnerId: null,
           winner: null,
           phase: 'submitting',
-          blackPool,
-          whitePool,
-          blackDeck: shuffle(blackPool),
-          whiteDeck: shuffle(whitePool),
         };
         // Reaproveita init parcial: repõe mãos e tira carta preta nova.
         const withHands = advanceToNextRound({ ...redealt, round: redealt.round - 1, czarId });
         commitHostState({ ...withHands, czarId });
       }
     }
-    broadcastLobby(lobby);
-    persistHostLobby();
-  }, [roomCode, playerName, send, broadcastLobby, commitHostState, persistHostLobby]);
+  }, [roomCode, playerName, pidKey, send, commitLobby, commitHostState]);
 
   useEffect(() => { maybePromoteSelfRef.current = maybePromoteSelf; }, [maybePromoteSelf]);
 
@@ -642,7 +869,12 @@ export function useMultiplayer(
         // ── Mensagens de jogo ───────────────────────────────────────────
         .on('broadcast', { event: 'join' }, ({ payload }) => {
           if (!isHostRef.current) return;
-          const { clientId: joinerId, name } = payload as { clientId: string; name: string };
+          const { clientId: joinerId, name, appearance: rawAppearance } = payload as {
+            clientId: string;
+            name: string;
+            appearance?: CultistAppearance;
+          };
+          const appearance = normalizeCultistAppearance(rawAppearance);
 
           // clientId repetido → só reenvia welcome + estado.
           if (clientPlayerMapRef.current.has(joinerId)) {
@@ -668,12 +900,16 @@ export function useMultiplayer(
             cancelDisconnectTimer(seat.id);
             setPlayerConnected(seat.id, true);
             if (!lobbyPlayersRef.current.some((lp) => lp.id === seat.id)) {
-              const back = [...lobbyPlayersRef.current, { id: seat.id, name }].sort((a, b) => a.id - b.id);
-              lobbyPlayersRef.current = back;
-              setLobbyPlayers(back);
-              lobbySeqRef.current++;
-              broadcastLobby(back);
-              persistHostLobby();
+              const back = [
+                ...lobbyPlayersRef.current,
+                normalizeLobbyPlayer({
+                  id: seat.id,
+                  name,
+                  ready: false,
+                  appearance: seat.appearance ?? appearance,
+                }),
+              ].sort((a, b) => a.id - b.id);
+              commitLobby(back, { countdownEndsAt: null });
             }
             send('welcome', { clientId: joinerId, playerId: seat.id });
             if (hostGameRef.current) broadcastState(hostGameRef.current);
@@ -691,7 +927,9 @@ export function useMultiplayer(
           // rodada.
           if (gameOn) {
             setPendingJoins((prev) =>
-              prev.some((p) => p.clientId === joinerId) ? prev : [...prev, { clientId: joinerId, name }]
+              prev.some((p) => p.clientId === joinerId)
+                ? prev
+                : [...prev, { clientId: joinerId, name, appearance }]
             );
             send('join_pending', { clientId: joinerId });
             return;
@@ -699,12 +937,13 @@ export function useMultiplayer(
 
           // Lobby — qualquer um senta.
           const playerId = nextPlayerIdRef.current++;
-          const updated = [...lobbyPlayersRef.current, { id: playerId, name }];
-          lobbyPlayersRef.current = updated;
-          setLobbyPlayers(updated);
-          lobbySeqRef.current++;
-          broadcastLobby(updated);
-          persistHostLobby();
+          const updated = [...lobbyPlayersRef.current, normalizeLobbyPlayer({
+            id: playerId,
+            name,
+            ready: false,
+            appearance,
+          })];
+          commitLobby(updated, { countdownEndsAt: null });
 
           clientPlayerMapRef.current.set(joinerId, playerId);
           send('welcome', { clientId: joinerId, playerId });
@@ -733,20 +972,72 @@ export function useMultiplayer(
             setJoinRejected(false);
             try { sessionStorage.setItem(pidKey, String(playerId)); } catch { /* melhor esforço */ }
             clearJoinTimers();
-            channel.track({ playerId, name: playerName });
+            channel.track({
+              playerId,
+              name: playerName,
+              appearance: localAppearanceRef.current,
+            });
           }
         })
         .on('broadcast', { event: 'lobby' }, ({ payload }) => {
           if (isHostRef.current) return;
-          const { players, seq } = payload as { players: LobbyPlayer[]; seq?: number };
+          const { players, rules, countdownEndsAt: nextCountdown, seq } = payload as {
+            players: LobbyPlayer[];
+            rules?: LobbyRules;
+            countdownEndsAt?: number | null;
+            seq?: number;
+          };
           if (seq !== undefined && seq <= lastLobbySeqRef.current) return;
-          if (seq !== undefined) lastLobbySeqRef.current = seq;
-          setLobbyPlayers(players);
+          if (seq !== undefined) {
+            lastLobbySeqRef.current = seq;
+            // Se este convidado virar host, continua a sequência antiga. Sem
+            // isso os demais rejeitariam o primeiro snapshot do sucessor.
+            lobbySeqRef.current = Math.max(lobbySeqRef.current, seq);
+          }
+          const normalizedPlayers = normalizeLobbyPlayers(players);
+          const normalizedRules = normalizeLobbyRules(rules);
+          const normalizedCountdown = typeof nextCountdown === 'number' && Number.isFinite(nextCountdown)
+            ? nextCountdown
+            : null;
+          lobbyPlayersRef.current = normalizedPlayers;
+          lobbyRulesRef.current = normalizedRules;
+          countdownEndsAtRef.current = normalizedCountdown;
+          setLobbyPlayers(normalizedPlayers);
+          setLobbyRules(normalizedRules);
+          setCountdownEndsAt(normalizedCountdown);
+          const own = normalizedPlayers.find((player) => player.id === myPlayerIdRef.current);
+          if (own) localAppearanceRef.current = own.appearance;
+        })
+        .on('broadcast', { event: 'lobby_ready_request' }, ({ payload }) => {
+          if (!isHostRef.current) return;
+          const { playerId, ready, lobbySeq } = payload as {
+            playerId: number;
+            ready: boolean;
+            lobbySeq?: number;
+          };
+          if (!Number.isInteger(playerId) || typeof ready !== 'boolean') return;
+          // Consentimento enviado antes de uma troca de regras/roster não vale
+          // para o ritual novo.
+          if (lobbySeq !== undefined && lobbySeq !== lobbySeqRef.current) return;
+          applyLobbyReady(playerId, ready);
+        })
+        .on('broadcast', { event: 'lobby_appearance_request' }, ({ payload }) => {
+          if (!isHostRef.current) return;
+          const { playerId, appearance: requestedAppearance } = payload as {
+            playerId: number;
+            appearance: CultistAppearance;
+          };
+          if (!Number.isInteger(playerId)) return;
+          applyLobbyAppearance(playerId, requestedAppearance);
         })
         .on('broadcast', { event: 'game_state' }, ({ payload }) => {
           if (isHostRef.current) return;
           const { state, target } = payload as { state: GameState; target?: number };
           if (target !== undefined && target !== myPlayerIdRef.current) return;
+          const currentRevision = gameStateRef.current?.stateRevision ?? -1;
+          const incomingRevision = state.stateRevision ?? -1;
+          if (incomingRevision < currentRevision) return;
+          gameStateRef.current = state;
           setGameState(state);
         })
         .on('broadcast', { event: 'action' }, ({ payload }) => {
@@ -759,12 +1050,36 @@ export function useMultiplayer(
           if (!isHostRef.current) return;
           const { playerId } = (payload ?? {}) as { playerId?: number };
           if (playerId !== undefined) {
+            const knownSeat = lobbyPlayersRef.current.some((player) => player.id === playerId)
+              || Boolean(hostGameRef.current?.players.some((player) => player.id === playerId));
+            if (!knownSeat) {
+              for (const [knownClientId, knownPlayerId] of clientPlayerMapRef.current) {
+                if (knownPlayerId === playerId) clientPlayerMapRef.current.delete(knownClientId);
+              }
+              send('rejoin_required', { targetId: playerId });
+              return;
+            }
             cancelDisconnectTimer(playerId);
             setPlayerConnected(playerId, true);
           }
           if (hostGameRef.current) broadcastState(hostGameRef.current);
           broadcastLobby(lobbyPlayersRef.current);
           send('host_changed', { hostId: hostIdRef.current });
+        })
+        .on('broadcast', { event: 'rejoin_required' }, ({ payload }) => {
+          if (isHostRef.current) return;
+          const { targetId } = (payload ?? {}) as { targetId?: number };
+          if (targetId !== myPlayerIdRef.current) return;
+          try { sessionStorage.removeItem(pidKey); } catch { /* melhor esforço */ }
+          myPlayerIdRef.current = null;
+          setMyPlayerId(null);
+          gameStateRef.current = null;
+          setGameState(null);
+          send('join', {
+            clientId: clientIdRef.current,
+            name: playerName,
+            appearance: localAppearanceRef.current,
+          });
         })
         // ── Chat ────────────────────────────────────────────────────────
         .on('broadcast', { event: 'chat' }, ({ payload }) => {
@@ -778,18 +1093,17 @@ export function useMultiplayer(
         .on('broadcast', { event: 'kicked' }, ({ payload }) => {
           if (isHostRef.current) return;
           const { targetId } = payload as { targetId: number };
-          if (targetId === myPlayerIdRef.current) setWasKicked(true);
+          if (targetId === myPlayerIdRef.current) {
+            try { sessionStorage.removeItem(pidKey); } catch { /* melhor esforço */ }
+            setWasKicked(true);
+          }
         })
         .on('broadcast', { event: 'leave_lobby' }, ({ payload }) => {
           if (!isHostRef.current) return;
           const { playerId } = payload as { playerId: number };
           const updated = lobbyPlayersRef.current.filter((p) => p.id !== playerId);
           if (updated.length === lobbyPlayersRef.current.length) return;
-          lobbyPlayersRef.current = updated;
-          setLobbyPlayers(updated);
-          lobbySeqRef.current++;
-          broadcastLobby(updated);
-          persistHostLobby();
+          commitLobby(updated, { countdownEndsAt: null });
         })
         .on('broadcast', { event: 'leave_game' }, ({ payload }) => {
           if (!isHostRef.current) return;
@@ -831,16 +1145,22 @@ export function useMultiplayer(
             // reconexões; `leave_lobby` continua sendo imediato.
             if (!gs || gs.phase === 'setup') {
               cancelDisconnectTimer(playerId);
+              const markedUnready = lobbyPlayersRef.current.map((player) =>
+                player.id === playerId && !player.isBot
+                  ? { ...player, ready: false }
+                  : player
+              );
+              if (markedUnready.some((player, index) =>
+                player.ready !== lobbyPlayersRef.current[index]?.ready
+              )) {
+                commitLobby(markedUnready, { countdownEndsAt: null });
+              }
               const timer = setTimeout(() => {
                 disconnectTimersRef.current.delete(playerId);
                 if (isPlayerPresent(playerId)) return;
                 const updated = lobbyPlayersRef.current.filter((lp) => lp.id !== playerId);
                 if (updated.length === lobbyPlayersRef.current.length) return;
-                lobbyPlayersRef.current = updated;
-                setLobbyPlayers(updated);
-                lobbySeqRef.current++;
-                broadcastLobby(updated);
-                persistHostLobby();
+                commitLobby(updated, { countdownEndsAt: null });
               }, DISCONNECT_GRACE_MS);
               disconnectTimersRef.current.set(playerId, timer);
               continue;
@@ -906,7 +1226,11 @@ export function useMultiplayer(
             setError(null);
 
             if (isHostRef.current) {
-              channel.track({ playerId: hostIdRef.current, name: playerName });
+              channel.track({
+                playerId: hostIdRef.current,
+                name: playerName,
+                appearance: localAppearanceRef.current,
+              });
               if (hostGameRef.current) {
                 setPlayerConnected(hostIdRef.current, true);
                 if (hostGameRef.current) broadcastState(hostGameRef.current);
@@ -923,14 +1247,22 @@ export function useMultiplayer(
               }, 12000);
             } else {
               if (myPlayerIdRef.current !== null) {
-                channel.track({ playerId: myPlayerIdRef.current, name: playerName });
+                channel.track({
+                  playerId: myPlayerIdRef.current,
+                  name: playerName,
+                  appearance: localAppearanceRef.current,
+                });
                 send('request_state', { playerId: myPlayerIdRef.current });
                 return;
               }
 
               const sendJoin = () => {
                 if (myPlayerIdRef.current !== null) return;
-                send('join', { clientId: clientIdRef.current, name: playerName });
+                send('join', {
+                  clientId: clientIdRef.current,
+                  name: playerName,
+                  appearance: localAppearanceRef.current,
+                });
               };
               sendJoin();
               if (retryInterval) clearInterval(retryInterval);
@@ -1002,7 +1334,7 @@ export function useMultiplayer(
   }, [
     roomCode, playerName, pidKey, send, broadcastState, broadcastLobby,
     applyHostAction, cancelDisconnectTimer, isPlayerPresent, setPlayerConnected,
-    persistHostLobby,
+    applyLobbyReady, applyLobbyAppearance, commitLobby,
   ]);
 
   const sendChat = useCallback((text: string) => {
@@ -1039,46 +1371,133 @@ export function useMultiplayer(
 
   // Bots existem só no lobby do host; entram no jogo como assentos normais.
   const addBot = useCallback(() => {
-    if (!isHost) return;
+    if (!isHostRef.current || hostGameRef.current) return;
     if (!hasAvailableSeat(lobbyPlayersRef.current.length)) return;
     const bots = lobbyPlayersRef.current.filter((p) => p.isBot);
     if (bots.length >= BOT_NAMES.length) return;
     const name = BOT_NAMES.find(
       (n) => !lobbyPlayersRef.current.some((p) => p.name === n)
     ) ?? `Bot ${bots.length + 1}`;
-    const id = BOT_ID_BASE + bots.length;
-    const updated = [...lobbyPlayersRef.current, { id, name, isBot: true }];
-    lobbyPlayersRef.current = updated;
-    setLobbyPlayers(updated);
-    lobbySeqRef.current++;
-    broadcastLobby(updated);
-    persistHostLobby();
-  }, [isHost, broadcastLobby, persistHostLobby]);
+    const occupiedIds = new Set(lobbyPlayersRef.current.map((player) => player.id));
+    let id = BOT_ID_BASE;
+    while (occupiedIds.has(id)) id++;
+    const updated = [...lobbyPlayersRef.current, normalizeLobbyPlayer({
+      id,
+      name,
+      isBot: true,
+      ready: true,
+      appearance: appearanceForId(id),
+    })];
+    commitLobby(updated, { countdownEndsAt: null });
+  }, [commitLobby]);
 
   const removeBot = useCallback((botId: number) => {
-    if (!isHost) return;
+    if (!isHostRef.current || hostGameRef.current) return;
     const updated = lobbyPlayersRef.current.filter((p) => p.id !== botId);
-    lobbyPlayersRef.current = updated;
-    setLobbyPlayers(updated);
-    lobbySeqRef.current++;
-    broadcastLobby(updated);
-    persistHostLobby();
-  }, [isHost, broadcastLobby, persistHostLobby]);
+    if (updated.length === lobbyPlayersRef.current.length) return;
+    commitLobby(updated, { countdownEndsAt: null });
+  }, [commitLobby]);
 
-  const startGame = useCallback((scoreLimit: number, mode: GameMode) => {
-    if (!isHost) return;
+  const setReady = useCallback((ready: boolean) => {
+    const playerId = myPlayerIdRef.current;
+    if (playerId === null || hostGameRef.current) return;
+    if (isHostRef.current) {
+      applyLobbyReady(playerId, ready);
+      return;
+    }
+    send('lobby_ready_request', {
+      playerId,
+      ready,
+      lobbySeq: lastLobbySeqRef.current,
+    });
+  }, [applyLobbyReady, send]);
+
+  const setAppearance = useCallback((appearance: CultistAppearance) => {
+    const playerId = myPlayerIdRef.current;
+    if (playerId === null || hostGameRef.current) return;
+    const normalized = normalizeCultistAppearance(appearance);
+    localAppearanceRef.current = normalized;
+    try {
+      localStorage.setItem(CULTIST_APPEARANCE_KEY, JSON.stringify(normalized));
+    } catch { /* melhor esforço */ }
+    void channelRef.current?.track({
+      playerId,
+      name: playerName ?? '?',
+      appearance: normalized,
+    });
+    if (isHostRef.current) {
+      applyLobbyAppearance(playerId, normalized);
+      return;
+    }
+    send('lobby_appearance_request', { playerId, appearance: normalized });
+  }, [playerName, applyLobbyAppearance, send]);
+
+  const updateLobbyRules = useCallback((patch: Partial<LobbyRules>) => {
+    if (!isHostRef.current || hostGameRef.current) return;
+    const nextRules = normalizeLobbyRules({ ...lobbyRulesRef.current, ...patch });
+    if (JSON.stringify(nextRules) === JSON.stringify(lobbyRulesRef.current)) return;
+    // Qualquer mudança de regra invalida consentimentos anteriores. Bots não
+    // precisam consentir e permanecem acesos.
+    const resetPlayers = lobbyPlayersRef.current.map((player) => ({
+      ...player,
+      ready: player.isBot === true,
+    }));
+    commitLobby(resetPlayers, { rules: nextRules, countdownEndsAt: null });
+  }, [commitLobby]);
+
+  const startGame = useCallback(() => {
+    if (!isHostRef.current || hostGameRef.current) return;
     const lobby = lobbyPlayersRef.current;
     if (lobby.length < MIN_PLAYERS || lobby.length > MAX_PLAYERS) return;
+    if (lobby.some((player) => !player.isBot && !player.ready)) return;
 
     const seats: Seat[] = lobby.map((lp) => ({
       id: lp.id,
       name: lp.name,
       isHuman: !lp.isBot,
+      appearance: lp.appearance,
     }));
+    countdownEndsAtRef.current = null;
+    setCountdownEndsAt(null);
     persistHostLobby();
     const custom = sanitizeCustomCards(customCardsRef.current);
-    commitHostState(initGame(seats, scoreLimit, mode, custom.black, custom.white));
-  }, [isHost, commitHostState, persistHostLobby]);
+    const rules = lobbyRulesRef.current;
+    commitHostState(initGame(
+      seats,
+      DEFAULT_SCORE_LIMIT,
+      rules.mode,
+      custom.black,
+      custom.white,
+      rules
+    ));
+  }, [commitHostState, persistHostLobby]);
+
+  // Todos os humanos, inclusive o host, acendem o próprio selo. Quando o
+  // último acende, o host publica um deadline absoluto: todos veem o mesmo 3…2…1.
+  useEffect(() => {
+    if (!isHost || hostGameRef.current) return;
+    const lobby = lobbyPlayersRef.current;
+    const validCount = lobby.length >= MIN_PLAYERS && lobby.length <= MAX_PLAYERS;
+    const everyoneReady = validCount
+      && lobby.every((player) => player.isBot || player.ready);
+
+    if (!everyoneReady) {
+      if (countdownEndsAtRef.current !== null) {
+        commitLobby(lobby, { countdownEndsAt: null });
+      }
+      return;
+    }
+
+    let deadline = countdownEndsAtRef.current;
+    if (deadline === null) {
+      deadline = Date.now() + RITUAL_COUNTDOWN_MS;
+      commitLobby(lobby, { countdownEndsAt: deadline });
+      return;
+    }
+
+    const timer = window.setTimeout(startGame, Math.max(0, deadline - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [isHost, lobbyPlayers, countdownEndsAt, commitLobby, startGame]);
 
   // Host remove alguém de propósito (lobby ou meio do jogo).
   const kickPlayer = useCallback((playerId: number) => {
@@ -1087,16 +1506,12 @@ export function useMultiplayer(
     cancelDisconnectTimer(playerId);
 
     const updatedLobby = lobbyPlayersRef.current.filter((p) => p.id !== playerId);
-    lobbyPlayersRef.current = updatedLobby;
-    setLobbyPlayers(updatedLobby);
-    lobbySeqRef.current++;
-    broadcastLobby(updatedLobby);
-    persistHostLobby();
+    commitLobby(updatedLobby, { countdownEndsAt: null });
 
     const gs = hostGameRef.current;
     if (!gs) return;
     commitHostState(removePlayer(gs, playerId));
-  }, [isHost, broadcastLobby, commitHostState, persistHostLobby, cancelDisconnectTimer, send]);
+  }, [isHost, commitLobby, commitHostState, cancelDisconnectTimer, send]);
 
   // Host libera quem chegou no meio do jogo. Ganha assento e mão na próxima
   // rodada.
@@ -1113,19 +1528,25 @@ export function useMultiplayer(
     const playerId = nextPlayerIdRef.current++;
     clientPlayerMapRef.current.set(joinerClientId, playerId);
 
-    const updated = [...lobbyPlayersRef.current, { id: playerId, name: pending.name }];
-    lobbyPlayersRef.current = updated;
-    setLobbyPlayers(updated);
-    lobbySeqRef.current++;
-    broadcastLobby(updated);
-    persistHostLobby();
+    const newcomer = normalizeLobbyPlayer({
+      id: playerId,
+      name: pending.name,
+      ready: false,
+      appearance: pending.appearance,
+    });
+    const updated = [...lobbyPlayersRef.current, newcomer];
+    commitLobby(updated, { countdownEndsAt: null });
 
-    pendingSeatsRef.current = [...pendingSeatsRef.current, { id: playerId, name: pending.name }];
+    pendingSeatsRef.current = [...pendingSeatsRef.current, {
+      id: playerId,
+      name: pending.name,
+      appearance: pending.appearance,
+    }];
     setPendingJoins((prev) => prev.filter((p) => p.clientId !== joinerClientId));
 
     send('welcome', { clientId: joinerClientId, playerId });
     if (hostGameRef.current) broadcastState(hostGameRef.current);
-  }, [isHost, broadcastLobby, broadcastState, persistHostLobby, send]);
+  }, [isHost, commitLobby, broadcastState, send]);
 
   const rejectJoin = useCallback((joinerClientId: string) => {
     if (!isHost) return;
@@ -1137,8 +1558,11 @@ export function useMultiplayer(
     if (myPlayerIdRef.current !== null) {
       send('leave_lobby', { playerId: myPlayerIdRef.current });
     }
+    try { sessionStorage.removeItem(pidKey); } catch { /* melhor esforço */ }
+    myPlayerIdRef.current = null;
+    setMyPlayerId(null);
     if (channelRef.current) supabase.removeChannel(channelRef.current);
-  }, [send]);
+  }, [pidKey, send]);
 
   const disconnect = useCallback(async () => {
     const channel = channelRef.current;
@@ -1177,6 +1601,8 @@ export function useMultiplayer(
     role: isHost ? 'host' : (myPlayerId !== null ? 'guest' : 'connecting'),
     myPlayerId,
     lobbyPlayers,
+    lobbyRules,
+    countdownEndsAt,
     gameState,
     isConnected,
     error,
@@ -1200,6 +1626,9 @@ export function useMultiplayer(
     sendChat,
     sendReaction,
     startGame,
+    setReady,
+    setAppearance,
+    updateLobbyRules,
     addBot,
     removeBot,
     kickPlayer,

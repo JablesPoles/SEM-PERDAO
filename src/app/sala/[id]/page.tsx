@@ -2,12 +2,13 @@
 import { use, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMultiplayer } from '../../../hooks/useMultiplayer';
-import { DEFAULT_SCORE_LIMIT, MAX_PLAYERS, MIN_PLAYERS } from '../../../lib/game';
-import { GameBoard } from '../../../components/GameBoard';
+import { getPhaseId, MAX_PLAYERS, MIN_PLAYERS } from '../../../lib/game';
+import { Tribunal3DGame } from '../../../components/Tribunal3DGame';
 import { ChatPanel } from '../../../components/ChatPanel';
 import { CustomDeckEditor } from '../../../components/CustomDeckEditor';
+import { RitualLobby } from '../../../components/lobby/RitualLobby';
 import { avatarColor, initials } from '../../../components/avatar';
-import { ChatMessage, GameMode } from '../../../lib/types';
+import { ChatMessage } from '../../../lib/types';
 import { playSound } from '../../../lib/sounds';
 import {
   CustomCards,
@@ -24,6 +25,7 @@ interface ChatWidgetProps {
   messages: ChatMessage[];
   myPlayerId: number | null;
   onSend: (text: string) => void;
+  placement?: 'lobby' | 'game';
 }
 
 function ChatIcon() {
@@ -34,7 +36,7 @@ function ChatIcon() {
   );
 }
 
-function ChatWidget({ messages, myPlayerId, onSend }: ChatWidgetProps) {
+function ChatWidget({ messages, myPlayerId, onSend, placement = 'lobby' }: ChatWidgetProps) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const prevCount = useRef(0);
@@ -52,7 +54,10 @@ function ChatWidget({ messages, myPlayerId, onSend }: ChatWidgetProps) {
   }, [messages.length, open, messages, myPlayerId]);
 
   return (
-    <div className="fixed bottom-4 right-3 z-40 flex flex-col items-end gap-2">
+    <div className={placement === 'game'
+      ? 'fixed top-1/2 right-3 -translate-y-1/2 z-40 flex flex-col items-end gap-2'
+      : 'fixed bottom-4 right-3 z-40 flex flex-col items-end gap-2'}
+    >
       {open && (
         <div
           className="w-72 flex flex-col bg-[#100f13]/95 border border-white/10 rounded-2xl shadow-2xl overflow-hidden backdrop-blur-md"
@@ -149,8 +154,6 @@ export default function SalaPage({ params }: PageProps) {
   });
 
   const [confirmLeave, setConfirmLeave] = useState(false);
-  const [scoreLimit, setScoreLimit] = useState(DEFAULT_SCORE_LIMIT);
-  const [gameMode, setGameMode] = useState<GameMode>('judge');
   const [showPlayers, setShowPlayers] = useState(false);
   const [showDeckEditor, setShowDeckEditor] = useState(false);
   const [customCards, setCustomCards] = useState<CustomCards>(emptyCustomCards);
@@ -296,10 +299,12 @@ export default function SalaPage({ params }: PageProps) {
       messages={allMessages}
       myPlayerId={mp.myPlayerId}
       onSend={mp.sendChat}
+      placement={mp.gameState ? 'game' : 'lobby'}
     />
   );
 
   if (mp.gameState) {
+    const phaseId = getPhaseId(mp.gameState);
     const activePlayers = mp.lobbyPlayers.filter(p => {
       const gs = mp.gameState!;
       return !gs.players.find(gp => gp.id === p.id)?.eliminated;
@@ -307,14 +312,24 @@ export default function SalaPage({ params }: PageProps) {
 
     return (
       <>
-        <GameBoard
+        <Tribunal3DGame
           state={mp.gameState}
           myId={mp.myPlayerId ?? 0}
-          onSubmit={(cardIds) => mp.sendAction({ type: 'submit', cardIds })}
-          onReveal={(index) => mp.sendAction({ type: 'reveal', index })}
-          onJudge={(index) => mp.sendAction({ type: 'judge', index })}
-          onVote={(index, phaseStartedAt) => mp.sendAction({ type: 'vote', index, phaseStartedAt })}
-          onNextRound={() => mp.sendAction({ type: 'next_round' })}
+          onSubmit={(cardIds) => mp.sendAction({
+            type: 'submit', cardIds, phaseId,
+          })}
+          onReveal={(index) => mp.sendAction({
+            type: 'reveal', index, phaseId,
+          })}
+          onJudge={(index) => mp.sendAction({
+            type: 'judge', index, phaseId,
+          })}
+          onVote={(index, phaseStartedAt) => mp.sendAction({
+            type: 'vote', index, phaseStartedAt, phaseId,
+          })}
+          onNextRound={() => mp.sendAction({
+            type: 'next_round', phaseId,
+          })}
           onRestart={() => { void mp.disconnect().finally(() => router.push('/')); }}
           reactions={mp.reactions}
           messages={mp.chatMessages}
@@ -368,7 +383,7 @@ export default function SalaPage({ params }: PageProps) {
         )}
 
         {/* Ações flutuantes: canto inferior esquerdo */}
-        <div className="fixed bottom-4 left-3 z-40 flex flex-col items-start gap-2">
+        <div className="fixed top-1/2 left-3 -translate-y-1/2 z-40 flex flex-col items-start gap-2">
           {isHost && showPlayers && (
             <div className="w-60 bg-[#100f13]/95 border border-white/10 rounded-2xl shadow-2xl overflow-hidden backdrop-blur-md p-3 flex flex-col gap-2">
               <span className="text-red font-bold text-[10.5px] tracking-[1.5px] px-1">JOGADORES</span>
@@ -445,229 +460,44 @@ export default function SalaPage({ params }: PageProps) {
     );
   }
 
-  // Lobby
-  const roomUrl = typeof window !== 'undefined' ? `${window.location.origin}/sala/${roomCode}` : '';
-  const playerCount = mp.lobbyPlayers.length;
-  const hasEnoughPlayers = playerCount >= MIN_PLAYERS;
-  const isAtCapacity = playerCount >= MAX_PLAYERS;
-  const isOverCapacity = playerCount > MAX_PLAYERS;
-  const canStart = hasEnoughPlayers && !isOverCapacity;
-  const bots = mp.lobbyPlayers.filter((p) => p.isBot);
+  const roomUrl = typeof window !== 'undefined'
+    ? `${window.location.origin}/sala/${roomCode}`
+    : '';
+  const customCardCount = customCards.black.length + customCards.white.length;
 
   return (
     <>
-      <div className="min-h-screen lobby-bg flex flex-col items-center justify-center p-7">
-        <div className="w-full max-w-sm flex flex-col">
-          <div className="flex flex-col items-center gap-1.5">
-            <span className="text-red font-bold text-[12px] tracking-[0.15em]">O TRIBUNAL ESTÁ MONTADO</span>
-            <h1 className="font-display text-ink text-4xl leading-none text-center">
-              SALA {roomCode}
-            </h1>
-          </div>
-
-          <div className="mt-7 bg-white border-2 border-ink rounded-2xl px-5 py-[18px] flex flex-col gap-3">
-            <span className="text-ink/55 text-[11px] font-bold tracking-[2px]">CÓDIGO DA SALA</span>
-            <div className="flex justify-between items-center">
-              <span className="font-display text-ink text-4xl tracking-[8px]">{roomCode}</span>
-              <button
-                onClick={() => navigator.clipboard.writeText(roomUrl)}
-                className="btn-ink h-[42px] px-[18px] rounded-[10px] font-bold text-[13px] transition-all hover:brightness-125 active:scale-95"
-              >
-                Copiar link
-              </button>
-            </div>
-            <div className="h-px bg-ink/15" />
-            <span className="text-ink/55 text-[12.5px] text-center font-medium">
-              manda no grupo — quem clicar senta na mesa
-            </span>
-          </div>
-
-          <div className="mt-6 flex flex-col gap-2.5">
-            <div className="flex justify-between items-baseline px-1">
-              <span className="text-ink/55 text-[11px] font-bold tracking-[2px]">NA MESA</span>
-              <span className="text-ink/55 text-xs font-medium">
-                {playerCount}/{MAX_PLAYERS} jogador{playerCount > 1 ? 'es' : ''}
-              </span>
-            </div>
-            {mp.lobbyPlayers.map((p) => (
-              <div
-                key={p.id}
-                className={`flex items-center gap-3 px-3.5 py-3 rounded-[14px] bg-white border-2 ${
-                  p.id === mp.myPlayerId ? 'border-red' : 'border-ink/10'
-                }`}
-              >
-                <div
-                  className="w-[38px] h-[38px] rounded-full flex items-center justify-center font-bold text-[13px] text-white"
-                  style={{ background: p.id === mp.hostId ? '#17161a' : avatarColor(p.id) }}
-                >
-                  {p.isBot ? '🤖' : initials(p.name)}
-                </div>
-                <div className="flex flex-col gap-px flex-1">
-                  <span className="text-ink font-bold text-sm">{p.name}</span>
-                  <span className={`text-xs font-medium ${p.id === mp.hostId ? 'text-ink/55' : 'text-ok'}`}>
-                    {p.id === mp.hostId ? 'anfitrião' : p.isBot ? 'bot — joga aleatório' : 'pronto'}
-                  </span>
-                </div>
-                {p.id === mp.myPlayerId && <span className="text-red text-base font-display">*</span>}
-                {isHost && p.id !== mp.hostId && (
-                  <button
-                    onClick={() => (p.isBot ? mp.removeBot(p.id) : mp.kickPlayer(p.id))}
-                    className="text-red/50 hover:text-red text-sm px-1.5 py-0.5 rounded transition-colors"
-                    title="Remover da sala"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            ))}
-            {mp.lobbyPlayers.length < MIN_PLAYERS && (
-              <div className="flex items-center gap-3 px-3.5 py-3 rounded-[14px] border-2 border-dashed border-ink/25">
-                <div className="w-[38px] h-[38px] rounded-full border-2 border-dashed border-ink/25 flex items-center justify-center text-ink/35">
-                  ?
-                </div>
-                <span className="text-ink/40 text-[13.5px] italic font-medium">esperando a galera entrar…</span>
-              </div>
-            )}
-            {isHost && bots.length < 3 && !isAtCapacity && (
-              <button
-                onClick={mp.addBot}
-                className="h-11 rounded-[14px] border-2 border-dashed border-ink/30 text-ink/60 hover:text-ink hover:border-ink font-bold text-[13px] transition-all active:scale-[0.98]"
-              >
-                + Adicionar bot
-              </button>
-            )}
-            {isHost && isAtCapacity && (
-              <p
-                role={isOverCapacity ? 'alert' : 'status'}
-                className={`rounded-[14px] border-2 px-3.5 py-3 text-center text-[12.5px] font-bold ${
-                  isOverCapacity
-                    ? 'border-red/60 bg-red/10 text-red'
-                    : 'border-ink/20 bg-ink/5 text-ink/60'
-                }`}
-              >
-                {isOverCapacity
-                  ? `Snapshot antigo com ${playerCount} lugares — remova ${playerCount - MAX_PLAYERS} antes de começar.`
-                  : 'Mesa completa — os 8 lugares estão ocupados.'}
-              </p>
-            )}
-            {isHost && (
-              <button
-                onClick={() => setShowDeckEditor(true)}
-                className="h-11 rounded-[14px] border-2 border-ink/30 text-ink/65 hover:text-ink hover:border-ink font-bold text-[13px] transition-all active:scale-[0.98] flex items-center justify-between px-4"
-              >
-                <span>▣ Baralho</span>
-                <span className="text-[11px] text-red">
-                  {customCards.black.length + customCards.white.length > 0
-                    ? `${customCards.black.length + customCards.white.length} própria${customCards.black.length + customCards.white.length > 1 ? 's' : ''}`
-                    : 'personalizar'}
-                </span>
-              </button>
-            )}
-          </div>
-
-          <div className="mt-7 flex flex-col gap-3">
-            {mp.role === 'host' && (
-              <>
-                <div className="flex flex-col gap-2">
-                  <div className="flex justify-between items-baseline px-1">
-                    <span className="text-ink/55 text-[11px] font-bold tracking-[2px]">MODO DE JOGO</span>
-                    <span className="text-ink/45 text-xs font-medium">
-                      {gameMode === 'judge' ? 'clássico' : 'todo mundo decide'}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setGameMode('judge')}
-                      className={`min-h-20 rounded-xl border-2 p-3 text-left transition-all ${
-                        gameMode === 'judge'
-                          ? 'border-ink bg-ink text-paper'
-                          : 'border-ink/20 bg-white text-ink hover:border-ink/50'
-                      }`}
-                    >
-                      <span className="block font-display text-[14px]">⚖ 1 JUIZ</span>
-                      <span className={`mt-1 block text-[10.5px] font-medium leading-snug ${gameMode === 'judge' ? 'text-paper/60' : 'text-ink/50'}`}>
-                        um não joga e escolhe a melhor
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGameMode('democracy')}
-                      className={`min-h-20 rounded-xl border-2 p-3 text-left transition-all ${
-                        gameMode === 'democracy'
-                          ? 'border-red bg-red text-white'
-                          : 'border-ink/20 bg-white text-ink hover:border-red/60'
-                      }`}
-                    >
-                      <span className="block font-display text-[14px]">🗳 DEMOCRACIA</span>
-                      <span className={`mt-1 block text-[10.5px] font-medium leading-snug ${gameMode === 'democracy' ? 'text-white/70' : 'text-ink/50'}`}>
-                        todos jogam e votam, menos na própria
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  <div className="flex justify-between items-baseline px-1">
-                    <span className="text-ink/55 text-[11px] font-bold tracking-[2px]">JOGAR ATÉ</span>
-                    <span className="text-ink/45 text-xs font-medium">{scoreLimit} pontos</span>
-                  </div>
-                  <div className="flex gap-2 justify-center flex-wrap">
-                    {[5, 7, 10].map((n) => (
-                      <button
-                        key={n}
-                        onClick={() => setScoreLimit(n)}
-                        className={[
-                          'h-10 px-5 rounded-[10px] text-[14px] font-bold transition-all',
-                          scoreLimit === n
-                            ? 'bg-ink text-paper'
-                            : 'border-2 border-ink/25 text-ink/60 hover:border-ink hover:text-ink',
-                        ].join(' ')}
-                      >
-                        {n}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => mp.startGame(scoreLimit, gameMode)}
-                  disabled={!canStart}
-                  className="btn-red h-13 rounded-xl font-display text-[15px] tracking-wide transition-all hover:brightness-110 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {canStart
-                    ? `COMEÇAR COM ${playerCount} JOGADORES`
-                    : isOverCapacity
-                      ? `REMOVA ${playerCount - MAX_PLAYERS} PRA COMEÇAR`
-                      : `FALTA${MIN_PLAYERS - playerCount > 1 ? 'M' : ''} ${MIN_PLAYERS - playerCount} PRA COMEÇAR`}
-                </button>
-                <p className="text-center text-ink/45 text-xs font-medium">
-                  {isOverCapacity
-                    ? `o limite atual é ${MAX_PLAYERS}; remova os lugares extras desse snapshot legado`
-                    : isAtCapacity
-                      ? 'mesa cheia — pode abrir o julgamento agora'
-                      : hasEnoughPlayers
-                        ? 'pode começar agora ou esperar mais gente'
-                        : 'compartilhe o código ou complete com bots — mínimo 3'}
-                </p>
-              </>
-            )}
-            {mp.role === 'guest' && (
-              <>
-                <p className="text-red font-bold text-[14px] text-center animate-pulse">
-                  aguardando o anfitrião abrir o julgamento…
-                </p>
-                <button
-                  onClick={() => { mp.leaveLobby(); router.push('/'); }}
-                  className="h-11 rounded-xl border-2 border-red/40 text-red/80 hover:text-red font-bold text-sm transition-all hover:border-red active:scale-95"
-                >
-                  Sair da sala
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
+      <RitualLobby
+        roomCode={roomCode}
+        roomUrl={roomUrl}
+        players={mp.lobbyPlayers}
+        myPlayerId={mp.myPlayerId}
+        hostId={mp.hostId}
+        isHost={isHost}
+        rules={mp.lobbyRules}
+        countdownEndsAt={mp.countdownEndsAt}
+        maxPlayers={MAX_PLAYERS}
+        minPlayers={MIN_PLAYERS}
+        customCardCount={customCardCount}
+        onAppearanceChange={mp.setAppearance}
+        onReadyChange={mp.setReady}
+        onRulesChange={mp.updateLobbyRules}
+        onAddBot={mp.addBot}
+        onRemoveBot={mp.removeBot}
+        onKickPlayer={mp.kickPlayer}
+        onOpenDeck={() => {
+          mp.setReady(false);
+          setShowDeckEditor(true);
+        }}
+        onLeave={() => {
+          if (isHost) {
+            void mp.disconnect().finally(() => router.push('/'));
+          } else {
+            mp.leaveLobby();
+            router.push('/');
+          }
+        }}
+      />
       <CustomDeckEditor
         open={showDeckEditor && isHost}
         cards={customCards}

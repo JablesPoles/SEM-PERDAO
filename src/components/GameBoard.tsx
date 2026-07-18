@@ -5,8 +5,10 @@ import {
   fillBlanks,
   getActivePlayers,
   getGameMode,
-  JUDGE_SECONDS,
-  SUBMIT_SECONDS,
+  getGameRules,
+  getPhaseEndsAt,
+  getRoundLimit,
+  getWinnerIds,
   voteCountFor,
   votingChoicesFor,
 } from '../lib/game';
@@ -201,13 +203,13 @@ function JudgingCard({
 
 // Relógio da fase, sincronizado pelo phaseStartedAt do host. Nos últimos 10s
 // faz tique-taque — só pra quem ainda precisa agir.
-function PhaseTimer({ startedAt, seconds, ticking }: { startedAt: number; seconds: number; ticking: boolean }) {
+function PhaseTimer({ endsAt, seconds, ticking }: { endsAt: number; seconds: number; ticking: boolean }) {
   const [left, setLeft] = useState(seconds);
   const lastTickRef = useRef(-1);
 
   useEffect(() => {
     const update = () => {
-      const l = Math.max(0, seconds - (Date.now() - startedAt) / 1000);
+      const l = Math.max(0, (endsAt - Date.now()) / 1000);
       setLeft(l);
       if (ticking && l > 0 && l <= 10) {
         const s = Math.ceil(l);
@@ -220,7 +222,7 @@ function PhaseTimer({ startedAt, seconds, ticking }: { startedAt: number; second
     update();
     const id = setInterval(update, 200);
     return () => clearInterval(id);
-  }, [startedAt, seconds, ticking]);
+  }, [endsAt, seconds, ticking]);
 
   const pct = Math.max(0, Math.min(100, (left / seconds) * 100));
   const low = left <= 10;
@@ -512,6 +514,7 @@ export function GameBoard({
 
   const mySubmission = gs.submissions.find((s) => s.playerId === myId);
   const iSubmitted = !!mySubmission;
+  const iWonGame = getWinnerIds(gs).includes(myId);
   const pick = gs.blackCard?.pick ?? 1;
 
   // Nova rodada: limpa seleções e toca o aviso.
@@ -537,11 +540,11 @@ export function GameBoard({
         if (gs.roundWinnerId === myId) playSound('roundWin');
       }
       if (gs.phase === 'game-end') {
-        playSound(gs.winner?.id === myId ? 'victory' : 'defeat');
+        playSound(iWonGame ? 'victory' : 'defeat');
       }
       prevPhase.current = gs.phase;
     }
-  }, [gs.phase, iAmCzar, democracy, gs.roundWinnerId, gs.winner, myId]);
+  }, [gs.phase, iAmCzar, democracy, gs.roundWinnerId, iWonGame, myId]);
 
   // Um empate abre outra urna sem mudar a fase nem a rodada.
   const voteRoundKey = `${gs.round}-${gs.votingRound ?? 1}-${gs.phaseStartedAt}`;
@@ -608,6 +611,8 @@ export function GameBoard({
   // ── Fim de jogo ─────────────────────────────────────────────────────────
   if (gs.phase === 'game-end') {
     const ranked = [...gs.players].sort((a, b) => b.score - a.score);
+    const winnerIds = getWinnerIds(gs);
+    const winnerNames = ranked.filter((player) => winnerIds.includes(player.id)).map((player) => player.name);
     return (
       <div className="min-h-screen table-bg relative">
         <PlayerRail gs={gs} myId={myId} reactions={reactions} messages={messages} />
@@ -615,7 +620,7 @@ export function GameBoard({
             <div className="text-center flex flex-col items-center gap-3">
               <div className="stamp text-xl">VEREDITO FINAL</div>
               <h1 className="font-display text-paper text-5xl sm:text-6xl leading-none card-in">
-                {gs.winner ? gs.winner.name.toUpperCase() : 'NINGUÉM'}
+                {winnerNames.length ? winnerNames.join(' & ').toUpperCase() : 'NINGUÉM'}
               </h1>
               <p className="text-paper/60 font-bold text-sm tracking-wide">
                 CULPADO DE SER A PIOR PESSOA DA MESA ☠
@@ -627,11 +632,11 @@ export function GameBoard({
                 <div
                   key={p.id}
                   className={`card-in flex items-center gap-3 px-4 py-3 rounded-xl ${
-                    i === 0 ? 'bg-red text-white' : 'bg-white/[0.06] text-paper'
+                    winnerIds.includes(p.id) ? 'bg-red text-white' : 'bg-white/[0.06] text-paper'
                   }`}
                   style={{ animationDelay: `${i * 90}ms` }}
                 >
-                  <span className="font-display text-lg w-7">{i === 0 ? '☠' : `${i + 1}º`}</span>
+                  <span className="font-display text-lg w-7">{winnerIds.includes(p.id) ? '☠' : `${i + 1}º`}</span>
                   <span className="font-bold flex-1 truncate">
                     {p.name}{p.eliminated ? ' (saiu)' : ''}
                   </span>
@@ -653,7 +658,18 @@ export function GameBoard({
   }
 
   const showTimer = gs.phase === 'submitting' || gs.phase === 'judging';
-  const timerSeconds = gs.phase === 'submitting' ? SUBMIT_SECONDS : JUDGE_SECONDS;
+  const rules = getGameRules(gs);
+  const timerSeconds = gs.phase === 'submitting' ? rules.submitSeconds : rules.judgeSeconds;
+  const timerEndsAt = getPhaseEndsAt(gs) ?? (gs.phaseStartedAt + timerSeconds * 1000);
+  const usesRoundLimit = Number.isInteger(gs.roundLimit) && (gs.roundLimit ?? 0) > 0;
+  const roundLabel = usesRoundLimit
+    ? gs.suddenDeath
+      ? `RODADA ${gs.round} · MORTE SÚBITA`
+      : `RODADA ${gs.round}/${getRoundLimit(gs)} · ${rules.turnLimit} VOLTA${rules.turnLimit > 1 ? 'S' : ''}`
+    : `RODADA ${gs.round} · ATÉ ${gs.scoreLimit}`;
+  const highestScore = Math.max(0, ...getActivePlayers(gs.players).map((player) => player.score));
+  const scoreLeaders = getActivePlayers(gs.players).filter((player) => player.score === highestScore);
+  const finalReady = usesRoundLimit && gs.round >= getRoundLimit(gs) && scoreLeaders.length === 1;
   const iNeedToAct =
     (gs.phase === 'submitting' && !!me && (democracy || !iAmCzar) && !iSubmitted) ||
     (gs.phase === 'judging' && (democracy ? eligibleToVote && !myVote : iAmCzar));
@@ -673,7 +689,7 @@ export function GameBoard({
               {democracy ? '🗳 DEMO' : '⚖ JUIZ'} · R{gs.round}
             </span>
             <span className="hidden sm:inline">
-              {democracy ? '🗳 DEMOCRACIA' : '⚖ 1 JUIZ'} · RODADA {gs.round} · ATÉ {gs.scoreLimit}
+              {democracy ? '🗳 DEMOCRACIA' : '⚖ 1 JUIZ'} · {roundLabel}
             </span>
           </span>
           <button
@@ -688,7 +704,7 @@ export function GameBoard({
         <div className="flex-1 min-w-0 flex flex-col">
           {showTimer && (
             <PhaseTimer
-              startedAt={gs.phaseStartedAt}
+              endsAt={timerEndsAt}
               seconds={timerSeconds}
               ticking={iNeedToAct && !muted}
             />
@@ -901,7 +917,7 @@ export function GameBoard({
               onClick={onNextRound}
               className="btn-red h-12 px-8 rounded-xl font-display text-[14px] tracking-wide transition-all hover:brightness-110 active:scale-95"
             >
-              PRÓXIMA RODADA →
+              {finalReady ? 'OUVIR SENTENÇA FINAL →' : gs.suddenDeath ? 'CONTINUAR MORTE SÚBITA →' : 'PRÓXIMA RODADA →'}
             </button>
             <p className="text-paper/40 text-[11.5px]">a rodada vira sozinha em alguns segundos</p>
           </div>

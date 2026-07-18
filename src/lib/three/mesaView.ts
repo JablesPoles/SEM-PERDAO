@@ -1,9 +1,81 @@
-import type { GameMode, GamePhase, GameState } from '../types';
+import type {
+  CultistAppearance,
+  GameMode,
+  GamePhase,
+  GameRules,
+  GameState,
+  TurnLimit,
+} from '../types';
 
 const FULL_TURN = Math.PI * 2;
 
 export const MESA_MIN_SEATS = 3;
 export const MESA_MAX_SEATS = 8;
+
+const LEGACY_RULES: GameRules = {
+  turnLimit: 1,
+  submitSeconds: 75,
+  judgeSeconds: 60,
+  resultSeconds: 9,
+};
+
+function validSeconds(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : fallback;
+}
+
+function viewRules(gs: GameState): GameRules {
+  return {
+    turnLimit: gs.turnLimit === 2 || gs.turnLimit === 3 ? gs.turnLimit : 1,
+    submitSeconds: validSeconds(gs.submitSeconds, LEGACY_RULES.submitSeconds),
+    judgeSeconds: validSeconds(gs.judgeSeconds, LEGACY_RULES.judgeSeconds),
+    resultSeconds: validSeconds(gs.resultSeconds, LEGACY_RULES.resultSeconds),
+  };
+}
+
+function phaseDuration(gs: GameState, rules: GameRules): number | null {
+  if (gs.phase === 'submitting') return rules.submitSeconds;
+  if (gs.phase === 'judging') return rules.judgeSeconds;
+  if (gs.phase === 'round-end') return rules.resultSeconds;
+  return null;
+}
+
+function viewPhaseEndsAt(gs: GameState, rules: GameRules): number | null {
+  if (gs.phaseEndsAt === null) return null;
+  if (typeof gs.phaseEndsAt === 'number' && Number.isFinite(gs.phaseEndsAt)) {
+    return gs.phaseEndsAt;
+  }
+  const duration = phaseDuration(gs, rules);
+  return duration === null ? null : gs.phaseStartedAt + duration * 1000;
+}
+
+function viewWinnerIds(gs: GameState): number[] {
+  const ids = new Set(gs.players.map((player) => player.id));
+  const candidates = Array.isArray(gs.winnerIds) && gs.winnerIds.length
+    ? gs.winnerIds
+    : gs.winner
+      ? [gs.winner.id]
+      : [];
+  return [...new Set(candidates.filter((id) => ids.has(id)))];
+}
+
+function viewAppearance(value: CultistAppearance | undefined): CultistAppearance {
+  const robe = value?.robe;
+  const hood = value?.hood;
+  const face = value?.face;
+  const accent = value?.accent;
+  const accessory = value?.accessory;
+  return {
+    robe: robe === 'ash' || robe === 'midnight' || robe === 'moss' ? robe : 'blood',
+    hood: hood === 'spire' || hood === 'shrouded' ? hood : 'classic',
+    face: face === 'ember' || face === 'grin' || face === 'weeping' ? face : 'void',
+    accent: accent === 'brass' || accent === 'scarlet' || accent === 'cyan' ? accent : 'bone',
+    accessory: accessory === 'chain' || accessory === 'candle' || accessory === 'relic'
+      ? accessory
+      : 'none',
+  };
+}
 
 /**
  * Contrato somente-leitura entre as regras da partida e o palco 3D.
@@ -37,6 +109,7 @@ export interface MesaSeatView {
   readonly connected: boolean;
   readonly eliminated: boolean;
   readonly score: number;
+  readonly appearance: Readonly<CultistAppearance>;
   /** Só é usado durante `submitting`; não liga o assento a uma prova. */
   readonly submitted: boolean;
   /** Marcadores de resultado nunca acendem antes do fim da rodada. */
@@ -70,13 +143,24 @@ export interface MesaView {
   readonly phase: GamePhase;
   readonly mode: GameMode;
   readonly round: number;
+  readonly usesRoundLimit: boolean;
+  readonly turnLimit: TurnLimit | null;
+  readonly roundLimit: number | null;
+  readonly suddenDeath: boolean;
   readonly scoreLimit: number;
+  readonly phaseId: string;
   readonly phaseStartedAt: number;
+  readonly phaseEndsAt: number | null;
+  readonly phaseDurationSeconds: number | null;
+  readonly submitSeconds: number;
+  readonly judgeSeconds: number;
+  readonly resultSeconds: number;
   readonly votingRound: 1 | 2;
   readonly tieBreak: boolean;
   readonly selfId: number | null;
   readonly judgeId: number | null;
   readonly roundWinnerId: number | null;
+  readonly winnerIds: readonly number[];
   readonly gameWinnerId: number | null;
   readonly blackCard: MesaBlackCardView | null;
   readonly seats: readonly MesaSeatView[];
@@ -149,7 +233,12 @@ export function projectMesaView(gs: GameState, myId: number): MesaView {
     ? activeJudgeId
     : null;
   const roundWinnerId = verdict ? gs.roundWinnerId : null;
-  const gameWinnerId = gs.phase === 'game-end' ? (gs.winner?.id ?? null) : null;
+  const winnerIds = freezeArray(gs.phase === 'game-end' ? viewWinnerIds(gs) : []);
+  const winnerIdSet = new Set(winnerIds);
+  const gameWinnerId = winnerIds[0] ?? null;
+  const rules = viewRules(gs);
+  const usesRoundLimit = Number.isInteger(gs.roundLimit) && (gs.roundLimit ?? 0) > 0;
+  const phaseEndsAt = viewPhaseEndsAt(gs, rules);
 
   const seats = freezeArray(sourcePlayers.map((player, index) => Object.freeze({
     id: player.id,
@@ -162,9 +251,10 @@ export function projectMesaView(gs: GameState, myId: number): MesaView {
     connected: player.connected,
     eliminated: player.eliminated,
     score: player.score,
+    appearance: Object.freeze(viewAppearance(player.appearance)),
     submitted: gs.phase === 'submitting' && submittedIds.has(player.id),
     isRoundWinner: verdict && player.id === roundWinnerId,
-    isGameWinner: gs.phase === 'game-end' && player.id === gameWinnerId,
+    isGameWinner: gs.phase === 'game-end' && winnerIdSet.has(player.id),
   })));
 
   // Durante a coleta, o assento sabe apenas que uma prova chegou. Criar uma
@@ -207,13 +297,27 @@ export function projectMesaView(gs: GameState, myId: number): MesaView {
     phase: gs.phase,
     mode,
     round: gs.round,
+    usesRoundLimit,
+    turnLimit: usesRoundLimit ? rules.turnLimit : null,
+    roundLimit: usesRoundLimit ? gs.roundLimit as number : null,
+    suddenDeath: usesRoundLimit && Boolean(gs.suddenDeath),
     scoreLimit: gs.scoreLimit,
+    phaseId: gs.phaseId
+      ?? `legacy:r${gs.round}:${gs.phase}:${Number.isFinite(gs.phaseStartedAt) ? gs.phaseStartedAt : 0}`,
     phaseStartedAt: gs.phaseStartedAt,
+    phaseEndsAt,
+    phaseDurationSeconds: phaseEndsAt === null
+      ? null
+      : Math.max(0, (phaseEndsAt - gs.phaseStartedAt) / 1000),
+    submitSeconds: rules.submitSeconds,
+    judgeSeconds: rules.judgeSeconds,
+    resultSeconds: rules.resultSeconds,
     votingRound: gs.votingRound,
     tieBreak: verdict && gs.tieBreak,
     selfId: selfExists ? myId : null,
     judgeId,
     roundWinnerId,
+    winnerIds,
     gameWinnerId,
     blackCard,
     seats,

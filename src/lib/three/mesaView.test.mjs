@@ -95,6 +95,77 @@ test('snapshot sem mode usa o modo clássico e mantém o juiz', () => {
   assert.equal(view.seats.find((seat) => seat.id === 30)?.isJudge, true);
 });
 
+test('projeta relógio, limite por voltas e morte súbita sem depender do renderer', () => {
+  const view = projectMesaView(state({
+    turnLimit: 2,
+    roundLimit: 6,
+    suddenDeath: true,
+    phaseId: 'host-phase-42',
+    phaseStartedAt: 10_000,
+    phaseEndsAt: 22_000,
+    submitSeconds: 12,
+    judgeSeconds: 23,
+    resultSeconds: 6,
+  }), 10);
+
+  assert.equal(view.usesRoundLimit, true);
+  assert.equal(view.turnLimit, 2);
+  assert.equal(view.roundLimit, 6);
+  assert.equal(view.suddenDeath, true);
+  assert.equal(view.phaseId, 'host-phase-42');
+  assert.equal(view.phaseStartedAt, 10_000);
+  assert.equal(view.phaseEndsAt, 22_000);
+  assert.equal(view.phaseDurationSeconds, 12);
+  assert.equal(view.submitSeconds, 12);
+  assert.equal(view.judgeSeconds, 23);
+  assert.equal(view.resultSeconds, 6);
+});
+
+test('snapshot legado preserva scoreLimit e deriva relógio sem inventar roundLimit', () => {
+  const view = projectMesaView(state(), 10);
+
+  assert.equal(view.usesRoundLimit, false);
+  assert.equal(view.turnLimit, null);
+  assert.equal(view.roundLimit, null);
+  assert.equal(view.scoreLimit, 7);
+  assert.equal(view.phaseId, 'legacy:r4:submitting:1234');
+  assert.equal(view.phaseEndsAt, 1234 + 75_000);
+  assert.equal(view.phaseDurationSeconds, 75);
+});
+
+test('normaliza e congela a aparência pública de cada assento', () => {
+  const players = [
+    player(10, {
+      appearance: {
+        robe: 'moss',
+        hood: 'spire',
+        face: 'weeping',
+        accent: 'cyan',
+        accessory: 'relic',
+      },
+    }),
+    player(20, { appearance: { robe: 'hack', accessory: 'arbitrary' } }),
+    player(30),
+  ];
+  const view = projectMesaView(state({ players }), 10);
+
+  assert.deepEqual(view.seats[0].appearance, {
+    robe: 'moss',
+    hood: 'spire',
+    face: 'weeping',
+    accent: 'cyan',
+    accessory: 'relic',
+  });
+  assert.deepEqual(view.seats[1].appearance, {
+    robe: 'blood',
+    hood: 'classic',
+    face: 'void',
+    accent: 'bone',
+    accessory: 'none',
+  });
+  assert.equal(Object.isFrozen(view.seats[0].appearance), true);
+});
+
 test('na coleta expõe somente quais assentos enviaram, nunca a prova', () => {
   const gs = state({
     submissions: [{
@@ -207,6 +278,21 @@ test('game-end projeta o vencedor geral sem copiar seu Player/hand', () => {
   assert.equal(view.gameWinnerId, 30);
   assert.equal(view.seats.find((seat) => seat.id === 30)?.isGameWinner, true);
   assert.doesNotMatch(JSON.stringify(view), /final-secret|NAO VAZAR/);
+});
+
+test('winnerIds marca todos os vencedores sem copiar objetos Player', () => {
+  const view = projectMesaView(state({
+    phase: 'game-end',
+    winner: null,
+    winnerIds: [20, 30, 30, 999],
+  }), 10);
+
+  assert.deepEqual(view.winnerIds, [20, 30]);
+  assert.equal(view.gameWinnerId, 20);
+  assert.equal(view.seats.find((seat) => seat.id === 20)?.isGameWinner, true);
+  assert.equal(view.seats.find((seat) => seat.id === 30)?.isGameWinner, true);
+  assert.equal(view.seats.find((seat) => seat.id === 10)?.isGameWinner, false);
+  assert.equal(Object.isFrozen(view.winnerIds), true);
 });
 
 test('retorna um snapshot congelado e desacoplado do GameState', () => {
