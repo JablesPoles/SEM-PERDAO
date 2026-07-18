@@ -207,17 +207,17 @@ export class Reu {
       emissive: emissivoTunica,
     });
 
-    // túnica drapeada: perfil curvo (bainha larga, cintura, ombros caídos)
+    // Túnica curta e pesada: o corpo abre pouco até a bainha. O perfil antigo
+    // subia fino demais até o rosto e virava um triângulo comprido.
     const perfil = [
       [0.02, 0.0],
       [0.85, 0.02],
-      [0.8, 0.28],
-      [0.66, 0.62],
-      [0.54, 0.95],
-      [0.46, 1.2],
-      [0.38, 1.42],
-      [0.31, 1.56],
-      [0.17, 1.68],
+      [0.82, 0.28],
+      [0.76, 0.58],
+      [0.68, 0.86],
+      [0.58, 1.1],
+      [0.46, 1.3],
+      [0.34, 1.42],
     ].map(([r, y]) => new THREE.Vector2(r, y));
     const tunica = new THREE.Mesh(new THREE.LatheGeometry(perfil, 20), matTunica);
     tunica.castShadow = true;
@@ -230,9 +230,21 @@ export class Reu {
     const pingente = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.34, 8), matCorda);
     pingente.position.set(0.18, 0.5, 0.62);
 
-    // capuz: esfera parcial com abertura funda virada pra mesa
+    // Cowl curto nos ombros: liga cabeça e túnica sem construir um cone até o rosto.
+    const perfilCowl = [
+      [0.67, 0.0],
+      [0.62, 0.12],
+      [0.54, 0.24],
+      [0.44, 0.34],
+      [0.36, 0.4],
+    ].map(([r, y]) => new THREE.Vector2(r, y));
+    const cowl = new THREE.Mesh(new THREE.LatheGeometry(perfilCowl, 20), matTunica);
+    cowl.position.y = 1.13;
+    cowl.castShadow = true;
+
+    // Capuz: mais largo/alto no topo, com abertura funda virada pra mesa.
     const capuzGrp = new THREE.Group();
-    const aberturaCapuz = Math.PI * 0.58;
+    const aberturaCapuz = Math.PI * 0.54;
     const capuz = new THREE.Mesh(
       new THREE.SphereGeometry(0.42, 20, 14, 0, Math.PI * 2 - aberturaCapuz),
       new THREE.MeshLambertMaterial({
@@ -243,13 +255,15 @@ export class Reu {
       })
     );
     capuz.rotation.y = Math.PI / 2 + aberturaCapuz / 2; // abertura centrada em +z
+    capuz.scale.set(1.1, 1.18, 0.98);
     capuz.castShadow = true;
     // o vazio: esfera preta fosca preenchendo o interior — o rosto mora NELA
     const vazio = new THREE.Mesh(
-      new THREE.SphereGeometry(0.36, 12, 10),
+      new THREE.SphereGeometry(0.37, 12, 10),
       new THREE.MeshBasicMaterial({ color: 0x0a090c })
     );
     vazio.position.z = -0.02;
+    vazio.scale.set(1.06, 1.12, 0.94);
     capuzGrp.add(capuz, vazio);
 
     // carinha luminosa DENTRO do capuz — acompanha inclinação e escala dele
@@ -268,20 +282,19 @@ export class Reu {
           depthWrite: false,
         })
       );
-      // Acima da gola da túnica e um pouco à frente do vazio: a carinha precisa
-      // morar no capuz, não parecer estampada sobre o robe.
-      this.rostoMesh.position.set(0, 0.15, 0.38);
+      // Ainda flutua no vazio, mas perto o bastante para pertencer à cabeça.
+      this.rostoMesh.position.set(0, 0.1, 0.335);
       capuzGrp.add(this.rostoMesh);
     }
 
-    capuzGrp.position.y = ALTURA_ROSTO + 0.08;
+    capuzGrp.position.y = ALTURA_ROSTO + 0.13;
     capuzGrp.rotation.x = 0.12; // debruçado sobre a mesa
     if (opts.juiz) {
       capuzGrp.scale.setScalar(1.18);
       capuzGrp.position.y += 0.08;
     }
 
-    this.corpo.add(tunica, corda, pingente, capuzGrp);
+    this.corpo.add(tunica, cowl, corda, pingente, capuzGrp);
 
     // crachá torto preso na túnica — a seita bate ponto
     const tc = drawCracha(nome);

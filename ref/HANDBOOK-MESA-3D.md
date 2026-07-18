@@ -67,6 +67,9 @@ fullscreen com o shader do **filtro CRT**. O retrô vem DAÍ, não dos modelos
   A carinha é FILHA do grupo do capuz (acompanha inclinação/escala).
 - Calibração v3: abertura do capuz mais larga; rosto 0.15 acima e um pouco à
   frente do vazio, 0.44×0.33; emissivo sutil no tecido evita réus sumirem.
+- Calibração v4: túnica mais curta e menos triangular; cowl próprio liga os
+  ombros à cabeça; capuz oval maior no topo; rosto recuado para z=0.335 e
+  novamente perto do vazio, ainda com a flutuação estilizada.
 - Expressões: neutro, riso, choque, desprezo, sono (`drawRosto`, 64x48 px)
 - Ações (`acao()`): soco, apontar, aplaudir, festejar, facepalm, rir —
   durações em `DURACAO`, envelope `pulso()` sobe-segura-volta, tudo
@@ -83,6 +86,11 @@ fullscreen com o shader do **filtro CRT**. O retrô vem DAÍ, não dos modelos
 - API de teste da página: `testarExpressao(e)`, `testarAcao(a)`, `martelada()`
 - Câmera de laboratório: enquadramento fixo próximo do POV; órbita manual
   continua disponível, mas a rotação automática foi desligada.
+- Reações v1: `testarReacao(tipo)` cria tomate, sapato ou rosa low-poly e
+  arremessa numa Bézier curta de um réu ao outro lado da mesa. Objetos giram,
+  somem e liberam geometria/material ao fim.
+- Fala v1: `testarFala()` cria um plano billboard com balão em textura canvas
+  pixelada sobre o juiz; acompanha a câmera, sobe levemente e desaparece.
 
 ### Sons (sons3d.ts)
 Sintetizados (ruído filtrado + osciladores), respeitam o mute do jogo
@@ -92,6 +100,7 @@ filtrada, modulação lenta) começa no primeiro gesto e encerra em fade ao sair
 da cena. O seletor SOM na página usa o mesmo mute do jogo. Browsers só liberam
 áudio após primeiro gesto — sons do caos automático antes disso falham em
 silêncio (ok).
+- Reações ganharam whoosh curto; balões usam dois estalos de máquina de escrever.
 
 ## Roadmap (atualizar a cada entrega)
 
@@ -108,14 +117,14 @@ silêncio (ok).
 - [x] Sons do porão sintetizados ligados às ações
 - [x] Calibração v3: rosto/capuz, leitura do CRT, luz uniforme, vermelho só no
   veredito, câmera fixa e drone ambiente com mute
+- [x] Calibração v4 do cultista: túnica curta + cowl + capuz maior no topo +
+  rosto recuado
+- [x] Protótipo de reações arremessadas (tomate/sapato/rosa) + balão pixelado
 
 ### Agora (aguardando feedback do Poles)
-- [ ] Validar a calibração v3 após hard reload: posição/escala do rosto,
-  claridade, dose do CRT e volume do drone
+- [ ] Validar a calibração v4 e o ritmo/tamanho das reações após hard reload
 
 ### Próximo (ordem do conceito §9)
-- [ ] Reações arremessadas (tomate/sapato/rosa por cima da mesa) + balões de
-  fala pixelados
 - [ ] Cortes de câmera por ato (mesa → provas → juiz → placar) + POV
   primeira pessoa sentado (a cadeira vazia do azimute 0°)
 - [ ] Timer diegético: lâmpada pisca acelerando; migração de host = lâmpada

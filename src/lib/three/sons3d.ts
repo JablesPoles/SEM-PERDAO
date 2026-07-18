@@ -174,6 +174,22 @@ export function pararAmbiente() {
   for (const fonte of atual.fontes) fonte.stop(fim + 0.02);
 }
 
+/** Objeto cortando o ar por cima da mesa. */
+export function somArremesso() {
+  tocar((a) => {
+    ruido(a, 0, 0.22, 950, 0.7, 0.09, 'bandpass');
+    tom(a, 0, 0.2, 360, 150, 0.07, 'triangle');
+  });
+}
+
+/** Balão pixelado surgindo: estalo curto de máquina de escrever. */
+export function somBalao() {
+  tocar((a) => {
+    tom(a, 0, 0.045, 780, 620, 0.07, 'square');
+    tom(a, 0.055, 0.04, 660, 540, 0.05, 'square');
+  });
+}
+
 /** Martelo do juiz: estalo seco + corpo grave + eco de porão. */
 export function somMartelada() {
   tocar((a) => {

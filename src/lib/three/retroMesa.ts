@@ -14,7 +14,15 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Reu, EXPRESSOES, type Expressao, type Acao } from './reus';
 import { avatarColor } from '@/components/avatar';
-import { iniciarAmbiente, pararAmbiente, somMartelada, somCarta, somZap } from './sons3d';
+import {
+  iniciarAmbiente,
+  pararAmbiente,
+  somArremesso,
+  somBalao,
+  somMartelada,
+  somCarta,
+  somZap,
+} from './sons3d';
 
 // Paleta "Brutal Minimal — Sem Perdão" (mesmos tokens do globals.css)
 const COR = {
@@ -29,6 +37,8 @@ const COR = {
 const CARD_W = 0.82;
 const CARD_H = 1.15;
 const CARD_T = 0.015; // espessura — cartas são caixas finas pra ter borda chanfrada
+
+export type Reacao3D = 'tomate' | 'sapato' | 'rosa';
 
 // ── Fontes: recupera o nome real que o next/font registrou ────────────────────
 function fontFamily(displayVar: string, fallback: string): string {
@@ -191,6 +201,33 @@ class Carta {
   }
 }
 
+interface ReacaoVoo {
+  group: THREE.Group;
+  inicio: THREE.Vector3;
+  controle: THREE.Vector3;
+  fim: THREE.Vector3;
+  t0: number;
+  dur: number;
+  giro: THREE.Vector3;
+}
+
+interface BalaoFala {
+  mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  textura: THREE.Texture;
+  t0: number;
+  dur: number;
+}
+
+function descartarObjeto(group: THREE.Object3D) {
+  group.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    o.geometry.dispose();
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    mats.forEach((m) => m.dispose());
+  });
+  group.removeFromParent();
+}
+
 // ── Cena ──────────────────────────────────────────────────────────────────────
 export class RetroMesa {
   private renderer: THREE.WebGLRenderer;
@@ -207,6 +244,8 @@ export class RetroMesa {
   private cartas: Carta[] = [];
   private provas: Carta[] = [];
   private reus: Reu[] = [];
+  private reacoesVoo: ReacaoVoo[] = [];
+  private baloesFala: BalaoFala[] = [];
   private pendulo!: THREE.Group;
   private spot!: THREE.SpotLight;
   private brilho!: THREE.PointLight;
@@ -522,6 +561,69 @@ export class RetroMesa {
     for (const r of this.reus) r.acao(a);
   }
 
+  /** Arremessa uma reação física de um réu até o outro lado da mesa. */
+  testarReacao(tipo: Reacao3D) {
+    const vivos = this.reus.filter((r) => !r.manequim);
+    const autor = vivos[Math.floor(Math.random() * vivos.length)];
+    if (!autor) return;
+
+    const group = this.criarObjetoReacao(tipo);
+    const inicio = autor.group.position.clone().multiplyScalar(0.82);
+    inicio.y = 1.12;
+    const fim = new THREE.Vector3(
+      -inicio.x * 0.72 + (Math.random() - 0.5) * 1.1,
+      0.16,
+      -inicio.z * 0.72 + (Math.random() - 0.5) * 1.1
+    );
+    const controle = inicio.clone().lerp(fim, 0.5);
+    controle.y = 3.1 + Math.random() * 0.8;
+    group.position.copy(inicio);
+    this.scene.add(group);
+    this.reacoesVoo.push({
+      group,
+      inicio,
+      controle,
+      fim,
+      t0: this.timer.getElapsed(),
+      dur: 1.05 + Math.random() * 0.2,
+      giro: new THREE.Vector3(
+        5 + Math.random() * 4,
+        7 + Math.random() * 5,
+        4 + Math.random() * 5
+      ),
+    });
+    autor.acao('festejar');
+    somArremesso();
+  }
+
+  /** Balão billboard curto sobre um réu — primeiro passo do chat dentro do mundo. */
+  testarFala() {
+    const falas = ['EU EXIJO JUSTIÇA!', 'ISSO É CALÚNIA.', 'CULPA DO ESTAGIÁRIO.', 'OBJEÇÃO, PORRA!'];
+    const vivos = this.reus.filter((r) => !r.manequim);
+    // No laboratório, o juiz do fundo mantém o balão sempre dentro da câmera.
+    // Na integração real, o autor virá do evento de chat.
+    const autor = vivos[0];
+    if (!autor) return;
+    const textura = this.criarTexturaBalao(falas[Math.floor(Math.random() * falas.length)]);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.95), new THREE.MeshBasicMaterial({
+      map: textura,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+      side: THREE.DoubleSide,
+    }));
+    mesh.position.copy(autor.group.position).multiplyScalar(0.78);
+    // Baixo o bastante para não cortar no topo mesmo nos assentos do fundo.
+    mesh.position.y = 2.5;
+    mesh.quaternion.copy(this.camera.quaternion);
+    mesh.renderOrder = 20;
+    this.scene.add(mesh);
+    this.baloesFala.push({ mesh, textura, t0: this.timer.getElapsed(), dur: 2.6 });
+    autor.setExpressao('desprezo');
+    somBalao();
+  }
+
   /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake incluso. */
   martelada() {
     if (this.marteloT < 0) {
@@ -587,6 +689,77 @@ export class RetroMesa {
     pilha.fixarBase();
     this.scene.add(pilha.group);
     this.cartas.push(pilha);
+  }
+
+  private criarObjetoReacao(tipo: Reacao3D): THREE.Group {
+    const group = new THREE.Group();
+
+    if (tipo === 'tomate') {
+      const seco = new THREE.MeshLambertMaterial({ color: 0x8a2620, flatShading: true });
+      const escuro = new THREE.MeshLambertMaterial({ color: COR.panel, flatShading: true });
+      const corpo = new THREE.Mesh(new THREE.SphereGeometry(0.2, 9, 7), seco);
+      corpo.scale.y = 0.82;
+      const talo = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.1, 5), escuro);
+      talo.position.y = 0.17;
+      group.add(corpo, talo);
+    } else if (tipo === 'sapato') {
+      const papel = new THREE.MeshLambertMaterial({ color: COR.paper, flatShading: true });
+      const escuro = new THREE.MeshLambertMaterial({ color: COR.panel, flatShading: true });
+      const sola = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.1, 0.2), papel);
+      sola.position.y = -0.08;
+      const corpo = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.22, 0.22), escuro);
+      corpo.position.x = -0.05;
+      const bico = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.13, 0.2), escuro);
+      bico.position.set(0.25, -0.02, 0);
+      group.add(sola, corpo, bico);
+    } else {
+      const seco = new THREE.MeshLambertMaterial({ color: 0x8a2620, flatShading: true });
+      const escuro = new THREE.MeshLambertMaterial({ color: COR.panel, flatShading: true });
+      const haste = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.62, 5), escuro);
+      haste.rotation.z = Math.PI / 2;
+      const flor = new THREE.Mesh(new THREE.DodecahedronGeometry(0.15, 0), seco);
+      flor.position.x = -0.34;
+      const folha = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.18, 5), escuro);
+      folha.position.set(0.08, 0.08, 0);
+      folha.rotation.z = -0.8;
+      group.add(haste, flor, folha);
+    }
+    group.traverse((o) => {
+      if (o instanceof THREE.Mesh) o.castShadow = true;
+    });
+    return group;
+  }
+
+  private criarTexturaBalao(texto: string): THREE.CanvasTexture {
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 128;
+    const x = c.getContext('2d')!;
+    x.fillStyle = '#17161a';
+    x.strokeStyle = '#f2efe9';
+    x.lineWidth = 6;
+    x.beginPath();
+    x.moveTo(14, 10);
+    x.lineTo(242, 10);
+    x.lineTo(242, 92);
+    x.lineTo(142, 92);
+    x.lineTo(118, 119);
+    x.lineTo(121, 92);
+    x.lineTo(14, 92);
+    x.closePath();
+    x.fill();
+    x.stroke();
+    x.fillStyle = '#f2efe9';
+    x.font = `700 22px ${fontFamily('--font-archivo-black', 'sans-serif')}`;
+    x.textAlign = 'center';
+    x.textBaseline = 'middle';
+    x.fillText(texto, 128, 51, 210);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    return tex;
   }
 
   /** animação de entrada: cai do alto girando até a pose alvo */
@@ -692,6 +865,36 @@ export class RetroMesa {
     }
     for (const r of this.reus) r.tick(t, dt);
 
+    // Reações atravessam a mesa numa parábola curta e somem antes de virar lixo.
+    this.reacoesVoo = this.reacoesVoo.filter((reacao) => {
+      const k = Math.min((t - reacao.t0) / reacao.dur, 1);
+      const umMenos = 1 - k;
+      reacao.group.position.set(
+        umMenos * umMenos * reacao.inicio.x + 2 * umMenos * k * reacao.controle.x + k * k * reacao.fim.x,
+        umMenos * umMenos * reacao.inicio.y + 2 * umMenos * k * reacao.controle.y + k * k * reacao.fim.y,
+        umMenos * umMenos * reacao.inicio.z + 2 * umMenos * k * reacao.controle.z + k * k * reacao.fim.z
+      );
+      reacao.group.rotation.x = reacao.giro.x * k;
+      reacao.group.rotation.y = reacao.giro.y * k;
+      reacao.group.rotation.z = reacao.giro.z * k;
+      if (k < 1) return true;
+      descartarObjeto(reacao.group);
+      return false;
+    });
+
+    this.baloesFala = this.baloesFala.filter((balao) => {
+      const k = Math.min((t - balao.t0) / balao.dur, 1);
+      balao.mesh.position.y += dt * 0.045;
+      balao.mesh.quaternion.copy(this.camera.quaternion);
+      balao.mesh.material.opacity = k > 0.72 ? (1 - k) / 0.28 : 1;
+      if (k < 1) return true;
+      balao.mesh.removeFromParent();
+      balao.textura.dispose();
+      balao.mesh.geometry.dispose();
+      balao.mesh.material.dispose();
+      return false;
+    });
+
     // martelada do juiz: ergue devagar, crava seco, a sala treme
     if (this.marteloT >= 0) {
       this.marteloT += dt / 0.55;
@@ -769,6 +972,13 @@ export class RetroMesa {
     this.controls.dispose();
     this.timer.dispose();
     pararAmbiente();
+    for (const reacao of this.reacoesVoo) descartarObjeto(reacao.group);
+    for (const balao of this.baloesFala) {
+      balao.mesh.removeFromParent();
+      balao.textura.dispose();
+      balao.mesh.geometry.dispose();
+      balao.mesh.material.dispose();
+    }
     for (const r of this.reus) r.dispose();
     this.rt.dispose();
     this.blitMat.dispose();

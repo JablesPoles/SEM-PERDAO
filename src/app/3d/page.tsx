@@ -7,10 +7,15 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ALL_BLACK, ALL_WHITE } from '@/lib/cards';
 import { isMuted, setMuted } from '@/lib/sounds';
-import type { RetroMesa } from '@/lib/three/retroMesa';
+import type { Reacao3D, RetroMesa } from '@/lib/three/retroMesa';
 import { EXPRESSOES, ACOES, type Expressao, type Acao } from '@/lib/three/reus';
 
 const PIXELS = [1, 2, 3];
+const REACOES: { tipo: Reacao3D; rotulo: string }[] = [
+  { tipo: 'tomate', rotulo: '🍅 TOMATE' },
+  { tipo: 'sapato', rotulo: '👞 SAPATO' },
+  { tipo: 'rosa', rotulo: '🌹 ROSA' },
+];
 
 const ROTULO_ACAO: Record<Acao, string> = {
   soco: 'SOCO NA MESA',
@@ -149,6 +154,23 @@ export default function Mesa3D() {
               {e}
             </button>
           ))}
+        </div>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {REACOES.map(({ tipo, rotulo }) => (
+            <button
+              key={tipo}
+              onClick={() => cenaRef.current?.testarReacao(tipo)}
+              className="h-8 px-2.5 rounded-lg bg-white/5 text-paper/80 border border-white/15 hover:bg-white/15 active:scale-90 font-bold text-[10px] tracking-wider transition-all"
+            >
+              {rotulo}
+            </button>
+          ))}
+          <button
+            onClick={() => cenaRef.current?.testarFala()}
+            className="h-8 px-2.5 rounded-lg bg-white/5 text-paper/80 border border-white/15 hover:bg-white/15 active:scale-90 font-bold text-[10px] tracking-wider transition-all"
+          >
+            💬 FALA
+          </button>
         </div>
         <div className="flex flex-wrap gap-1.5 mb-2">
           {ACOES.map((a: Acao) => (
