@@ -4,15 +4,16 @@ Cards Against Humanity em PT-BR, online, pra jogar no escritório. Next.js 16 + 
 
 ## Estado atual
 
-- Jogo completo: lobby por código, 3–12 jogadores, bots pra completar, modos **1 Juiz** e **Democracia**, timer, reações, chat com narração, reconexão e migração de host.
+- Jogo completo: lobby ritual, 3–8 jogadores, bots, cultistas customizáveis, mesa 3D, modos **1 Juiz** e **Democracia**, relógios, reações/arremessos, chat no cenário, reconexão e migração de host.
+- O host escolhe 1/2/3 voltas completas e três ritmos. O limite regulamentar é fixado ao iniciar; empate no fim abre morte súbita.
 - Cartas próprias: editor host-only no lobby, persistência em `localStorage`, validação de texto/lacunas e pools autoritativos que sobrevivem aos reshuffles.
 - Baralho: 88 cartas pretas + 213 brancas em `src/lib/cards.ts` (abrasileirado do "Cartas Contra Tugas"). Pretas usam `____` por lacuna; `pick` é derivado da contagem de `____`.
-- Repo: `github.com/JablesPoles/SEM-PERDAO` (branch `main`). Deploy Vercel conectado ao push. Env vars (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) já estão no Vercel e no `.env.local` local (não commitado).
-- `npm run build` passa limpo. Não há test runner; validação da lógica pura é via simulação (ver "Testar").
+- Repo: `github.com/JablesPoles/SEM-PERDAO`; produção parte de `main` e o experimento atual vive em `experimento-3d`. O Vercel está conectado ao push.
+- `npm test`, `npm run lint`, `npx tsc --noEmit` e `npm run build` são os gates atuais.
 
 ## Arquitetura essencial (não quebrar isto)
 
-- **Host-autoritativo**: o host (`isHost`) guarda o `GameState` completo em `hostGameRef`, aplica todas as ações e transmite pra cada convidado uma cópia **redigida** (`redactStateFor` em `useMultiplayer.ts`). Convidado nunca recebe a mão dos outros, nem as pilhas de compra, nem as provas antes do juiz virar.
+- **Host-autoritativo**: o host (`isHost`) guarda o `GameState` completo em `hostGameRef`, aplica as ações e transmite para cada convidado uma cópia **redigida** (`redactStateFor` em `useMultiplayer.ts`). A interface não recebe pools, decks, mãos alheias nem provas lacradas. Como o protótipo usa broadcast público sem autenticação, isso não substitui canais privados/RLS ou backend autoritativo contra um cliente adversarial.
 - **Lógica pura** em `src/lib/game.ts` (sem React/UI) — é onde as regras vivem. `initGame`, `applySubmission`, `applyReveal`, `applyJudgePick`, `advanceToNextRound`, `removePlayer`. As pilhas `blackDeck`/`whiteDeck` vivem no `GameState` e são zeradas na redação.
 - **Reshuffle**: quando uma pilha esvazia, ela é reconstruída a partir de `ALL_BLACK`/`ALL_WHITE`. **É aqui que mora a armadilha da feature** (abaixo).
 
@@ -56,15 +57,17 @@ Fazer o baralho-fonte viajar dentro do `GameState`, redigido pros convidados (me
 ```bash
 npm install
 npm run dev            # localhost:3000 (precisa do .env.local com as chaves Supabase)
+npm test               # guards de regras/protocolo + projeção pública da mesa
+npm run lint
 npm run build          # tem que passar limpo antes de commitar
 ```
 
-- **Testar a lógica** (sem test runner): compilar `src/lib/{game,cards,ai,types}.ts` com `tsc --module commonjs` num dir temporário e rodar uma simulação de partida (ver histórico de commits — foi assim que validei reshuffle, remoção de jogador e a regra de revelar antes de condenar). Acceptance da feature: uma partida longa (limite alto, 5 jogadores) tem que **esgotar e reembaralhar** as pilhas e as cartas customizadas continuarem aparecendo, sem ID duplicado entre mãos.
+- **Testar a lógica:** `tests/game-guards.spec.ts` cobre limites, voltas, morte súbita, democracia, deadlines, kick/troca de juiz, abortos e redação; `src/lib/three/mesaView.test.mjs` cobre o contrato público do renderer. Uma partida longa ainda deve **esgotar e reembaralhar** as pilhas sem perder cartas customizadas ou duplicar IDs.
 - **Deploy**: `git push` → Vercel builda sozinho. Não precisa mexer em config.
 
 ## Convenções
 
 - Tudo em **PT-BR** (código, comentários, UI). Tom do jogo é pesado/18+ de propósito — não suavizar.
 - Commits com identidade `JablesPoles <matheuspolesnunes@gmail.com>`.
-- **Nunca** enviar `blackPool`/`whitePool`/`blackDeck`/`whiteDeck` nem a mão de um jogador pra outro cliente — a redação é a garantia anti-trapaça, qualquer campo novo com carta tem que ser zerado em `redactStateFor`.
+- **Nunca** incluir `blackPool`/`whitePool`/`blackDeck`/`whiteDeck`, mãos alheias ou provas lacradas no snapshot renderizado de outro cliente. Qualquer campo novo com carta deve ser zerado em `redactStateFor`. Para anti-cheat real, migrar também o transporte para identidade autenticada e canal privado/backend.
 - Não commitar `.env.local` (já está no `.gitignore`).
