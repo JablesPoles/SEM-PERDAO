@@ -135,22 +135,29 @@ function drawRosto(exp: Expressao, cor: string): THREE.CanvasTexture {
   return texCanvas(c);
 }
 
-/** Crachá de escritório torto na túnica. */
+/** Crachá de escritório: credencial barata de um tribunal clandestino. */
 function drawCracha(nome: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
-  c.width = 96;
-  c.height = 56;
+  c.width = 128;
+  c.height = 80;
   const x = c.getContext('2d')!;
   x.fillStyle = CREME;
-  x.fillRect(0, 0, 96, 56);
+  x.fillRect(0, 0, 128, 80);
   x.strokeStyle = INK;
-  x.lineWidth = 6;
-  x.strokeRect(3, 3, 90, 50);
+  x.lineWidth = 5;
+  x.strokeRect(3, 3, 122, 74);
   x.fillStyle = INK;
-  x.font = `700 20px ${fontDisplay()}`;
+  x.fillRect(7, 7, 114, 21);
+  x.fillStyle = CREME;
+  x.font = `700 11px ${fontDisplay()}`;
   x.textAlign = 'center';
   x.textBaseline = 'middle';
-  x.fillText(nome.slice(0, 6), 48, 30);
+  x.fillText('RÉU · TURNO DA NOITE', 64, 18);
+  x.fillStyle = INK;
+  x.font = `700 25px ${fontDisplay()}`;
+  x.fillText(nome.slice(0, 7), 64, 49);
+  x.font = `700 9px ${fontDisplay()}`;
+  x.fillText('SEM PERDÃO', 64, 68);
   return texCanvas(c);
 }
 
@@ -182,6 +189,11 @@ export interface ReuOpts {
 }
 
 const BASE_MAO_Y = 0.28;
+
+function criarCordao(pontos: THREE.Vector3[], material: THREE.Material): THREE.Mesh {
+  const curva = new THREE.CatmullRomCurve3(pontos);
+  return new THREE.Mesh(new THREE.TubeGeometry(curva, 8, 0.012, 5, false), material);
+}
 
 export class Reu {
   group = new THREE.Group();
@@ -296,29 +308,64 @@ export class Reu {
 
     this.corpo.add(tunica, cowl, corda, pingente, capuzGrp);
 
-    // crachá torto preso na túnica — a seita bate ponto
-    const tc = drawCracha(nome);
-    this.texturas.push(tc);
-    const cracha = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.44, 0.26),
-      new THREE.MeshLambertMaterial({ map: tc })
-    );
-    cracha.position.set(0.17, 1.08, 0.47);
-    cracha.rotation.x = -0.24;
-    cracha.rotation.z = -0.1;
-    this.corpo.add(cracha);
-
-    if (this.manequim) {
+    if (!this.manequim) {
+      // Crachá externo com backing e lanyard em V — a seita bate ponto.
+      const tc = drawCracha(nome);
+      this.texturas.push(tc);
+      const crachaGrp = new THREE.Group();
+      const backing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.55, 0.36, 0.028),
+        new THREE.MeshLambertMaterial({ color: 0x26252b })
+      );
+      const frente = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.52, 0.33),
+        new THREE.MeshBasicMaterial({ map: tc })
+      );
+      frente.position.z = 0.016;
+      crachaGrp.add(backing, frente);
+      crachaGrp.position.set(0.13, 1.01, 0.68);
+      crachaGrp.rotation.x = -0.12;
+      crachaGrp.rotation.z = -0.08;
+      const cordaoEsq = criarCordao([
+        new THREE.Vector3(-0.21, 1.42, 0.38),
+        new THREE.Vector3(-0.16, 1.27, 0.55),
+        new THREE.Vector3(0.01, 1.19, 0.67),
+      ], matCorda);
+      const cordaoDir = criarCordao([
+        new THREE.Vector3(0.21, 1.42, 0.38),
+        new THREE.Vector3(0.25, 1.28, 0.54),
+        new THREE.Vector3(0.25, 1.19, 0.67),
+      ], matCorda);
+      this.corpo.add(cordaoEsq, cordaoDir, crachaGrp);
+    } else {
+      // Manequim usa uma única plaqueta grande; nada de crachá enterrado atrás.
       const tp = drawPlaqueta(nome);
       this.texturas.push(tp);
-      const plaq = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.6, 0.34),
-        new THREE.MeshLambertMaterial({ map: tp })
+      const plaqGrp = new THREE.Group();
+      const backing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.65, 0.39, 0.03),
+        new THREE.MeshLambertMaterial({ color: 0x26252b })
       );
-      plaq.position.set(0, 0.9, 0.56);
-      plaq.rotation.x = -0.26;
-      plaq.rotation.z = 0.08;
-      this.corpo.add(plaq);
+      const frente = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.62, 0.36),
+        new THREE.MeshBasicMaterial({ map: tp })
+      );
+      frente.position.z = 0.017;
+      plaqGrp.add(backing, frente);
+      plaqGrp.position.set(0, 0.9, 0.73);
+      plaqGrp.rotation.x = -0.1;
+      plaqGrp.rotation.z = 0.06;
+      const cordaoEsq = criarCordao([
+        new THREE.Vector3(-0.2, 1.4, 0.39),
+        new THREE.Vector3(-0.24, 1.22, 0.58),
+        new THREE.Vector3(-0.18, 1.09, 0.72),
+      ], matCorda);
+      const cordaoDir = criarCordao([
+        new THREE.Vector3(0.2, 1.4, 0.39),
+        new THREE.Vector3(0.24, 1.22, 0.58),
+        new THREE.Vector3(0.18, 1.09, 0.72),
+      ], matCorda);
+      this.corpo.add(cordaoEsq, cordaoDir, plaqGrp);
     }
 
     this.group.add(this.corpo);

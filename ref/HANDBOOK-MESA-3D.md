@@ -70,6 +70,10 @@ fullscreen com o shader do **filtro CRT**. O retrô vem DAÍ, não dos modelos
 - Calibração v4: túnica mais curta e menos triangular; cowl próprio liga os
   ombros à cabeça; capuz oval maior no topo; rosto recuado para z=0.335 e
   novamente perto do vazio, ainda com a flutuação estilizada.
+- Crachá v2: credencial 128×80 com cabeçalho/nome, backing preto com espessura
+  e lanyard tubular em V; fica fora da superfície da túnica. Manequins não
+  duplicam mais crachá + placa: usam só a plaqueta RANDO/AUSENTE, também com
+  backing e cordão próprios.
 - Expressões: neutro, riso, choque, desprezo, sono (`drawRosto`, 64x48 px)
 - Ações (`acao()`): soco, apontar, aplaudir, festejar, facepalm, rir —
   durações em `DURACAO`, envelope `pulso()` sobe-segura-volta, tudo
@@ -119,6 +123,7 @@ silêncio (ok).
   veredito, câmera fixa e drone ambiente com mute
 - [x] Calibração v4 do cultista: túnica curta + cowl + capuz maior no topo +
   rosto recuado
+- [x] Crachás v2 externos com backing/lanyard + plaqueta exclusiva do manequim
 - [x] Protótipo de reações arremessadas (tomate/sapato/rosa) + balão pixelado
 
 ### Agora (aguardando feedback do Poles)
