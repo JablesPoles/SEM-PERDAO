@@ -52,20 +52,22 @@ interface ConfigAto {
   alvo: [number, number, number];
   dist: [number, number];
   polar: [number, number];
+  fov: number;
 }
 
 const CONFIG_ATO: Record<Ato, ConfigAto> = {
-  // enquadramento de laboratório: a mesa inteira
-  mesa: { pos: [0, 4.35, 8.6], alvo: [0, 0.45, 0.25], dist: [4.5, 13], polar: [Math.PI / 5, Math.PI / 2.15] },
-  // primeira pessoa sentado na cadeira vazia (destino final do jogo);
-  // um pouco acima do olhar real pra mão em leque virar faixa inferior, não muro
-  pov: { pos: [0, 2.0, 4.6], alvo: [0, 0.45, -0.6], dist: [2, 7], polar: [Math.PI / 3.2, Math.PI / 1.95] },
+  // enquadramento de laboratório: a mesa cheia (8 lugares) inteira no quadro
+  mesa: { pos: [0, 4.8, 9.2], alvo: [0, 0.45, 0.25], dist: [4.5, 14], polar: [Math.PI / 5, Math.PI / 2.15], fov: 50 },
+  // PRIMEIRA PESSOA de verdade: olho na altura da cabeça de quem senta na
+  // cadeira vazia (az 0°), mirando o juiz do outro lado. FOV mais aberto
+  // pra mesa + réus caberem; a mão em leque entra por baixo do quadro.
+  pov: { pos: [0, 1.5, 5.0], alvo: [0, 1.0, -3.5], dist: [3, 10], polar: [Math.PI / 2.6, Math.PI / 1.9], fov: 58 },
   // close nas provas lacradas
-  provas: { pos: [0, 2.5, 3.6], alvo: [0, 0.05, 1.05], dist: [1.5, 9], polar: [Math.PI / 6, Math.PI / 2.1] },
+  provas: { pos: [0, 2.5, 3.6], alvo: [0, 0.05, 1.05], dist: [1.5, 9], polar: [Math.PI / 6, Math.PI / 2.1], fov: 50 },
   // encarando o juiz de perto, do meio da mesa
-  juiz: { pos: [0, 1.7, -1.4], alvo: [0, 1.35, -5.15], dist: [2, 8], polar: [Math.PI / 4, Math.PI / 2.05] },
+  juiz: { pos: [0, 1.7, -1.4], alvo: [0, 1.35, -5.15], dist: [2, 8], polar: [Math.PI / 4, Math.PI / 2.05], fov: 45 },
   // plano zenital dramático
-  cima: { pos: [0, 9.2, 0.9], alvo: [0, 0, 0], dist: [5, 13], polar: [0.02, Math.PI / 2.3] },
+  cima: { pos: [0, 9.2, 0.9], alvo: [0, 0, 0], dist: [5, 13], polar: [0.02, Math.PI / 2.3], fov: 50 },
 };
 
 // ── Fontes: recupera o nome real que o next/font registrou ────────────────────
@@ -271,6 +273,7 @@ export class RetroMesa {
   private pointer = new THREE.Vector2(-2, -2);
   private cartas: Carta[] = [];
   private provas: Carta[] = [];
+  private maoGrp: THREE.Group | null = null;
   private reus: Reu[] = [];
   private reacoesVoo: ReacaoVoo[] = [];
   private baloesFala: BalaoFala[] = [];
@@ -301,11 +304,11 @@ export class RetroMesa {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.BasicShadowMap; // sombra dura = retrô
 
-    this.camera = new THREE.PerspectiveCamera(47, 1, 0.1, 60);
-    this.camera.position.set(0, 4.35, 8.6);
+    this.camera = new THREE.PerspectiveCamera(CONFIG_ATO.mesa.fov, 1, 0.1, 60);
+    this.camera.position.set(...CONFIG_ATO.mesa.pos);
 
     this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.target.set(0, 0.45, 0.25);
+    this.controls.target.set(...CONFIG_ATO.mesa.alvo);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     // A órbita continua livre, mas a composição não foge sozinha nem transforma
@@ -538,14 +541,17 @@ export class RetroMesa {
 
   /** Os réus sentados + o martelo do juiz à espera do veredito. */
   private montarReus() {
-    // azimute 0° = a cadeira vazia da frente (o POV do jogador, futuramente)
+    // MESA CHEIA: 8 lugares. Azimute 0° = a SUA cadeira (POV); os outros 7
+    // se espalham a cada 45°. O juiz senta sempre em frente a você (180°).
+    // Com menos jogadores, é só omitir assentos — o layout máximo é este.
     const assentos: { nome: string; az: number; juiz?: boolean; manequim?: boolean }[] = [
-      { nome: 'NATH', az: 180, juiz: true },
       { nome: 'GABS', az: 45 },
-      { nome: 'VANZO', az: 100 },
-      { nome: 'PPVAZ', az: 140 },
+      { nome: 'VANZO', az: 90 },
+      { nome: 'PPVAZ', az: 135 },
+      { nome: 'NATH', az: 180, juiz: true },
       { nome: 'RANDO', az: 225, manequim: true },
-      { nome: 'POLES', az: 300 },
+      { nome: 'POLES', az: 270 },
+      { nome: 'CAROL', az: 315 },
     ];
     assentos.forEach((a, i) => {
       const r = new Reu(a.nome, avatarColor(i + 1), a);
@@ -667,7 +673,29 @@ export class RetroMesa {
     this.controls.maxDistance = cfg.dist[1];
     this.controls.minPolarAngle = cfg.polar[0];
     this.controls.maxPolarAngle = cfg.polar[1];
+    this.posicionarMao(ato);
+    this.aplicarFov();
     this.controls.update();
+  }
+
+  /** FOV do ato atual, com abertura extra em tela estreita (celular em pé). */
+  private aplicarFov() {
+    const base = CONFIG_ATO[this.atoAtual].fov;
+    this.camera.fov = this.camera.aspect < 0.9 ? base + 14 : base;
+    this.camera.updateProjectionMatrix();
+  }
+
+  /** A mão em leque tem duas poses: na beirada (planos gerais) e ERGUIDA na
+   *  frente do olho (POV primeira pessoa, como quem segura as cartas). */
+  private posicionarMao(ato: Ato) {
+    if (!this.maoGrp) return;
+    if (ato === 'pov') {
+      this.maoGrp.position.set(0, 0.82, 4.05);
+      this.maoGrp.rotation.x = -0.62; // leque inclinado pra trás, de frente pro olho
+    } else {
+      this.maoGrp.position.set(0, 0.6, 3.35);
+      this.maoGrp.rotation.x = 0;
+    }
   }
 
   getAto(): Ato {
@@ -717,17 +745,23 @@ export class RetroMesa {
       this.entrarDoAlto(c, agora + 0.5 + i * 0.15);
     });
 
-    // mão em leque na beirada de trás (do ponto de vista inicial da câmera é a "sua" mão)
+    // a SUA mão: leque de verdade num grupo próprio (troca de pose no POV).
+    // Arco + abre-se em ângulo + escalonada em profundidade (sem z-fight).
+    this.maoGrp = new THREE.Group();
+    this.scene.add(this.maoGrp);
     const mao = brancas.slice(4, 10);
     mao.forEach((t, i) => {
       const c = criar(t, false);
+      this.maoGrp!.add(c.group); // re-parenta da cena pro leque
       const k = i - (mao.length - 1) / 2;
-      c.group.position.set(k * 0.62, 0.6 + Math.abs(k) * -0.04, 3.35);
-      c.group.rotation.y = -k * 0.14;
-      c.mesh.rotation.x = -0.35; // em pé, inclinada pra câmera
+      c.group.position.set(k * 0.55, -Math.abs(k) * 0.06, i * 0.015);
+      c.group.rotation.y = -k * 0.1;
+      c.group.rotation.z = -k * 0.1; // cartas abrem como num leque segurado
+      c.mesh.rotation.x = -0.35;
       c.fixarBase();
       this.entrarDoAlto(c, agora + 1.2 + i * 0.08);
     });
+    this.posicionarMao(this.atoAtual);
 
     // pilha de compra
     const pilha = new Carta(verso, verso, COR.ink);
@@ -874,9 +908,7 @@ export class RetroMesa {
     this.rt.setSize(lw, lh);
     if (this.blitMat) this.blitMat.uniforms.uPixel.value = this.pixelSize;
     this.camera.aspect = w / h;
-    // em tela estreita (celular em pé) abre o FOV pra mesa inteira caber
-    this.camera.fov = this.camera.aspect < 0.9 ? 66 : 50;
-    this.camera.updateProjectionMatrix();
+    this.aplicarFov();
   }
 
   private loop = (timestamp?: number) => {

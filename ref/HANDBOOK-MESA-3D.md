@@ -80,7 +80,9 @@ fullscreen com o shader do **filtro CRT**. O retrô vem DAÍ, não dos modelos
   interrompível. Mãos = luvas flutuantes (Rayman), corpo participa.
 - Juiz: capuz 1.18x, rosto vermelho, trono, martelo. Manequim (bot/ausente):
   túnica cinza, capuz SEM rosto, plaqueta pendurada.
-- Assentos em `montarReus` (azimute 0° = cadeira do POV futuro do jogador)
+- Assentos em `montarReus`: **layout máximo de 8 jogadores** — az 0° é a SUA
+  cadeira (POV), os outros 7 a cada 45°, juiz sempre em frente (180°). Com
+  menos jogadores, omitem-se assentos; toda câmera/posição assume esse teto.
 
 ### Caos e veredito (retroMesa.ts)
 - Gerador de caos: a cada 1.2–4s um réu aleatório muda expressão e/ou faz
@@ -125,10 +127,13 @@ silêncio (ok).
   rosto recuado
 - [x] Crachás v2 externos com backing/lanyard + plaqueta exclusiva do manequim
 - [x] Protótipo de reações arremessadas (tomate/sapato/rosa) + balão pixelado
-- [x] Atos de câmera com corte seco (`setAto`): mesa, POV (cadeira vazia az 0°,
-  mão como faixa inferior), provas, juiz (close no breu, olhos vermelhos) e
-  cima; cada ato com limites próprios de órbita ("esticar o pescoço").
-  Botões CÂMERA no topo da página. Branch publicada no GitHub → preview Vercel.
+- [x] Atos de câmera com corte seco (`setAto`): mesa, POV, provas, juiz e
+  cima; cada ato com limites próprios de órbita e FOV. Botões CÂMERA no topo.
+  Branch publicada no GitHub → preview Vercel.
+- [x] POV v2 first person de verdade: olho a 1.5 na cadeira vazia mirando o
+  juiz, FOV 58; a mão vira um leque ERGUIDO na frente do olho (grupo `maoGrp`
+  com pose própria no POV) com arco, abertura e escalonamento anti-z-fight.
+  Mesa cheia de 8 lugares.
 
 ### Agora (aguardando feedback do Poles)
 - [ ] Validar calibração v4, reações e os 5 atos de câmera (POV/JUIZ novos)
