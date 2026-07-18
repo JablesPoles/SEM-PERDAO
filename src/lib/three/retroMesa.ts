@@ -20,8 +20,10 @@ import {
   pararAmbiente,
   somArremesso,
   somBalao,
+  somFesta,
   somMartelada,
   somCarta,
+  somPalmas,
   somSoco,
   somZap,
 } from './sons3d';
@@ -271,6 +273,13 @@ class Carta {
   }
 }
 
+interface FlocoConfete {
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  rot: THREE.Euler;
+  rotVel: THREE.Vector3;
+}
+
 interface ReacaoVoo {
   group: THREE.Group;
   inicio: THREE.Vector3;
@@ -327,6 +336,18 @@ export class RetroMesa {
   private bulbo!: THREE.Mesh;
   private frisoMat!: THREE.MeshLambertMaterial;
   private recorteVermelho!: THREE.DirectionalLight;
+  private hemi!: THREE.HemisphereLight;
+  private preench!: THREE.DirectionalLight;
+  private holofoteVitoria!: THREE.SpotLight;
+  private vitoria: {
+    inicioT: number;
+    vencedores: Reu[];
+    confete: THREE.InstancedMesh | null;
+    flocos: FlocoConfete[];
+    proximaFesta: number;
+    somTocado: boolean;
+  } | null = null;
+  private luzGeral = 1; // 1 = sala normal; ~0.1 = blackout da vitória
   private blinkAte = 0;
   private proximoCaos = 3;
   private martelo!: THREE.Group;
@@ -532,13 +553,19 @@ export class RetroMesa {
   private montarCenario() {
     // Tribunal do Porão v2: cena VISÍVEL — o clima sinistro vem do filtro de
     // TV (scanlines/vinheta/grão no shader) e da lâmpada, não da escuridão.
-    const hemi = new THREE.HemisphereLight(0xfff0dc, 0x6b6a72, 2.4);
-    const preenchimento = new THREE.DirectionalLight(COR.paper, 1.1);
-    preenchimento.position.set(4, 6, 7);
+    // Campos porque o ato da vitória apaga a sala inteira (blackout suave).
+    this.hemi = new THREE.HemisphereLight(0xfff0dc, 0x6b6a72, 2.4);
+    this.preench = new THREE.DirectionalLight(COR.paper, 1.1);
+    this.preench.position.set(4, 6, 7);
     // Vermelho apagado no cotidiano; só acende quando existe veredito.
     this.recorteVermelho = new THREE.DirectionalLight(COR.red, 0);
     this.recorteVermelho.position.set(-6, 2.5, -6);
-    this.scene.add(hemi, preenchimento, this.recorteVermelho);
+    this.scene.add(this.hemi, this.preench, this.recorteVermelho);
+
+    // o holofote da vitória: um facho só, apagado até o game-end
+    this.holofoteVitoria = new THREE.SpotLight(0xfff4e0, 0, 0, 0.34, 0.4, 2);
+    this.holofoteVitoria.position.set(0, 7, 0);
+    this.scene.add(this.holofoteVitoria, this.holofoteVitoria.target);
 
     // o spotlight do culpado: apagado até o juiz cravar o martelo
     this.spotCulpado = new THREE.SpotLight(COR.red, 0, 0, 0.32, 0.35, 2);
@@ -745,6 +772,8 @@ export class RetroMesa {
     this.selfReu = selfSeat ? (this.reuPorId.get(selfSeat.id) ?? null) : null;
     if (this.selfReu) this.selfReu.group.visible = this.atoAtual !== 'pov';
     this.posicionarMartelo(view.seats, view.judgeId);
+    // réus foram reconstruídos: a vitória (se ativa) renasce no próximo sync
+    this.encerrarVitoria();
   }
 
   // ── Ferramentas internas de calibração (sem painel na UI final) ────────────
@@ -1127,11 +1156,145 @@ export class RetroMesa {
     if (winning && view.phase !== 'judging' && this.verdictProofId !== winning.id) {
       this.martelada(undefined, winning.id);
     }
+
+    // o ato final: game-end liga a festa fúnebre; qualquer outra fase desliga
+    if (view.phase === 'game-end') this.iniciarVitoria(view);
+    else this.encerrarVitoria();
   }
 
   private setDeadline(endsAt: number, durationMs: number) {
     this.deadlineEndsAt = Number.isFinite(endsAt) ? endsAt : 0;
     this.deadlineDurationMs = Math.max(1, Number.isFinite(durationMs) ? durationMs : 1);
+  }
+
+  // ── O ATO FINAL: blackout, um holofote só e confete preto/vermelho ─────────
+
+  /** Liga a festa fúnebre do game-end. Idempotente por sync. */
+  private iniciarVitoria(view: MesaView) {
+    if (this.vitoria) return;
+    const vencedores = view.seats
+      .filter((seat) => seat.isGameWinner)
+      .map((seat) => this.reuPorId.get(seat.id))
+      .filter((reu): reu is Reu => !!reu);
+    const alvoSeat = view.seats.find((seat) => seat.id === view.gameWinnerId)
+      ?? view.seats.find((seat) => seat.isGameWinner);
+
+    // holofote cai na cadeira do campeão (fallback: centro da mesa)
+    const raio = 5.15;
+    const alvoPos = alvoSeat
+      ? new THREE.Vector3(Math.sin(alvoSeat.azimuthRad) * raio, 0, Math.cos(alvoSeat.azimuthRad) * raio)
+      : new THREE.Vector3(0, 0, 0);
+    this.holofoteVitoria.position.set(alvoPos.x * 0.82, 7, alvoPos.z * 0.82);
+    this.holofoteVitoria.target.position.copy(alvoPos);
+
+    // confete: papel picado preto/vermelho/creme caindo dentro do facho
+    const NUM = 90;
+    const geom = new THREE.PlaneGeometry(0.085, 0.13);
+    const mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+    const confete = new THREE.InstancedMesh(geom, mat, NUM);
+    confete.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const cores = [new THREE.Color(COR.ink), new THREE.Color(COR.red), new THREE.Color(COR.paper)];
+    const flocos: FlocoConfete[] = [];
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < NUM; i++) {
+      const pos = new THREE.Vector3(
+        alvoPos.x * 0.82 + (Math.random() - 0.5) * 3.2,
+        2.5 + Math.random() * 4.5,
+        alvoPos.z * 0.82 + (Math.random() - 0.5) * 3.2
+      );
+      flocos.push({
+        pos,
+        vel: new THREE.Vector3((Math.random() - 0.5) * 0.5, -(0.8 + Math.random() * 0.9), (Math.random() - 0.5) * 0.5),
+        rot: new THREE.Euler(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI),
+        rotVel: new THREE.Vector3((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6),
+      });
+      dummy.position.copy(pos);
+      dummy.updateMatrix();
+      confete.setMatrixAt(i, dummy.matrix);
+      // preto/vermelho dominam; o creme salpica pra leitura no blackout
+      confete.setColorAt(i, cores[i % 4 === 3 ? 2 : i % 2]);
+    }
+    confete.instanceMatrix.needsUpdate = true;
+    if (confete.instanceColor) confete.instanceColor.needsUpdate = true;
+    this.scene.add(confete);
+
+    // se a última martelada ainda está caindo, a festa espera a sentença
+    const atraso = this.marteloT >= 0 ? 2.3 : 0.5;
+    this.vitoria = {
+      inicioT: this.timer.getElapsed() + atraso,
+      vencedores,
+      confete,
+      flocos,
+      proximaFesta: 0,
+      somTocado: false,
+    };
+  }
+
+  /** Reacende a sala e recolhe o confete (mudança de fase/partida nova). */
+  private encerrarVitoria() {
+    if (!this.vitoria) return;
+    if (this.vitoria.confete) {
+      this.vitoria.confete.geometry.dispose();
+      (this.vitoria.confete.material as THREE.Material).dispose();
+      this.vitoria.confete.removeFromParent();
+    }
+    this.holofoteVitoria.intensity = 0;
+    this.vitoria = null;
+  }
+
+  /** Animação por frame do ato final (chamada pelo loop). */
+  private tickVitoria(t: number, dt: number) {
+    const v = this.vitoria;
+    const ativa = !!v && t >= v.inicioT;
+    // blackout suave: a sala morre, sobra o facho
+    const alvoLuz = ativa ? 0.1 : 1;
+    this.luzGeral += (alvoLuz - this.luzGeral) * Math.min(1, dt * 2.2);
+    this.hemi.intensity = 2.4 * this.luzGeral;
+    this.preench.intensity = 1.1 * this.luzGeral;
+    this.holofoteVitoria.intensity = 170 * (1 - this.luzGeral) * (ativa ? 1 : 0.0);
+    if (!v || !ativa) return;
+
+    if (!v.somTocado) {
+      v.somTocado = true;
+      somFesta();
+      somPalmas(6);
+    }
+
+    // confete caindo em loop dentro do facho
+    if (v.confete) {
+      const dummy = new THREE.Object3D();
+      for (let i = 0; i < v.flocos.length; i++) {
+        const f = v.flocos[i];
+        f.pos.addScaledVector(f.vel, dt);
+        f.pos.x += Math.sin(t * 2.2 + i) * dt * 0.35; // baila no ar
+        f.rot.x += f.rotVel.x * dt;
+        f.rot.y += f.rotVel.y * dt;
+        f.rot.z += f.rotVel.z * dt;
+        if (f.pos.y < 0.02) {
+          f.pos.y = 4.5 + Math.random() * 2.5;
+        }
+        dummy.position.copy(f.pos);
+        dummy.rotation.copy(f.rot);
+        dummy.updateMatrix();
+        v.confete.setMatrixAt(i, dummy.matrix);
+      }
+      v.confete.instanceMatrix.needsUpdate = true;
+    }
+
+    // o campeão festeja; a mesa colapsa de inveja
+    if (t > v.proximaFesta) {
+      v.proximaFesta = t + 1.7 + Math.random() * 0.9;
+      for (const reu of v.vencedores) {
+        reu.acao('festejar');
+        reu.setExpressao('riso');
+      }
+      const perdedores = this.reus.filter((r) => !r.manequim && !v.vencedores.includes(r));
+      const azarado = perdedores[Math.floor(Math.random() * perdedores.length)];
+      if (azarado) {
+        azarado.acao(Math.random() < 0.5 ? 'facepalm' : 'tilt');
+        azarado.setExpressao(Math.random() < 0.5 ? 'desprezo' : 'choque');
+      }
+    }
   }
 
   private proofSlot(index: number, total: number, round: number) {
@@ -1540,9 +1703,13 @@ export class RetroMesa {
       somZap();
     }
     if (t < this.blinkAte) fator = 0.12;
+    // no blackout da vitória a lâmpada-narradora também se apaga
+    fator *= this.luzGeral;
     this.spot.intensity = 230 * fator;
     this.brilho.intensity = 10 * fator;
     (this.bulbo.material as THREE.MeshBasicMaterial).color.setHex(fator < 0.5 ? 0x55504a : 0xfff4e0);
+
+    this.tickVitoria(t, dt);
 
     // os réus vivem: respiração + caos aleatório (expressões e ações)
     if ((this.presentationPhase === 'lab' || this.presentationPhase === 'submitting') && t > this.proximoCaos) {
@@ -1697,6 +1864,7 @@ export class RetroMesa {
     window.removeEventListener('pointerdown', this.onPrimeiroGesto);
     this.controls.dispose();
     this.timer.dispose();
+    this.encerrarVitoria();
     pararAmbiente();
     for (const reacao of this.reacoesVoo) descartarObjeto(reacao.group);
     for (const balao of this.baloesFala) this.descartarBalao(balao);

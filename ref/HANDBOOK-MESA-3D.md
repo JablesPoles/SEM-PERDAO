@@ -207,7 +207,12 @@ silêncio (ok).
   sorteia resultado. Suportar combos de pretas `pick > 1`.
 - [ ] Timer diegético: lâmpada pisca acelerando; migração de host = lâmpada
   pisca e estabiliza
-- [ ] Vitória: blackout + spotlight único + confete preto/vermelho
+- [x] Vitória (game-end): blackout suave da sala inteira (incluindo a
+  lâmpada-narradora), holofote único na cadeira do campeão, confete
+  preto/vermelho/creme (InstancedMesh, 90 flocos em loop dentro do facho),
+  campeão festejando e perdedores colapsando. Se a última martelada ainda
+  está caindo, a festa espera a sentença (~2.3s). Encerra em qualquer
+  mudança de fase/assentos.
 - [x] Menu do Tribunal (home escura) + criação de personagem com preview 3D
   REAL: `vitrineReu.ts` (provador com lâmpada, giro por arrasto, filtro retrô
   enxuto) + `CultistStage3D.tsx`, usado no menu e no lobby ritual. Catálogo e
