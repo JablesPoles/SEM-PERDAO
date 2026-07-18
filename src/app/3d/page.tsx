@@ -50,6 +50,7 @@ export default function Mesa3D() {
   const [pronto, setPronto] = useState(false);
   const [somMudo, setSomMudo] = useState(false);
   const [ato, setAto] = useState<Ato>('mesa');
+  const [mao, setMao] = useState<string[]>([]);
 
   useEffect(() => {
     let viva = true;
@@ -68,6 +69,7 @@ export default function Mesa3D() {
       });
       onResize = () => cenaRef.current?.resize();
       window.addEventListener('resize', onResize);
+      setMao(sortear(ALL_WHITE, 8).map((c) => c.text));
       setPronto(true);
     })();
     return () => {
@@ -87,6 +89,13 @@ export default function Mesa3D() {
   const trocarAto = (a: Ato) => {
     setAto(a);
     cenaRef.current?.setAto(a);
+  };
+
+  // a ponte 2D→3D: a carta sai da UI e voa pro anel de provas na mesa
+  const jogarCarta = (i: number) => {
+    if (cenaRef.current?.jogarCarta(mao[i])) {
+      setMao((prev) => prev.filter((_, j) => j !== i));
+    }
   };
 
   const trocarSom = () => {
@@ -223,11 +232,34 @@ export default function Mesa3D() {
         </button>
       </div>
 
+      {/* A SUA MÃO — UI 2D por cima da mesa 3D (cartas legíveis são UI) */}
+      {mao.length > 0 && (
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 pb-3 pointer-events-auto max-w-[62vw]">
+          <p className="text-paper/50 text-[10px] font-bold tracking-widest uppercase text-center mb-1.5">
+            sua mão — clique pra jogar na mesa
+          </p>
+          <div className="flex gap-2 justify-center overflow-x-auto pb-1">
+            {mao.map((texto, i) => (
+              <button
+                key={`${i}-${texto.slice(0, 12)}`}
+                onClick={() => jogarCarta(i)}
+                className="w-24 h-32 shrink-0 bg-white border-2 border-ink rounded-xl p-2 text-left align-top text-[10px] font-bold text-ink leading-tight overflow-hidden transition-all hover:-translate-y-2 hover:rotate-1 active:scale-90 shadow-[0_10px_20px_-10px_rgba(0,0,0,0.8)]"
+              >
+                {texto}
+                <span className="block mt-1 text-[8px] tracking-wide">
+                  SEM PERDÃO<span className="text-red">*</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* rodapé */}
-      <div className="absolute bottom-0 right-0 p-4 sm:p-6 flex justify-end pointer-events-none max-w-[45%]">
+      <div className="absolute bottom-0 right-0 p-4 sm:p-6 flex justify-end pointer-events-none max-w-[30%]">
         <p className="text-paper/45 text-[11.5px] font-medium tracking-wide text-right">
-          arrasta pra orbitar · rolagem aproxima · primeiro gesto liga o porão ·{' '}
-          <span className="text-red font-bold">clique nas provas lacradas</span> pra revelar
+          arrasta pra orbitar · primeiro gesto liga o porão ·{' '}
+          <span className="text-red font-bold">clique nas provas</span> pra revelar
         </p>
       </div>
 

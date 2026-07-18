@@ -133,6 +133,28 @@ function drawCardTexture(text: string, dark: boolean): THREE.CanvasTexture {
   return tex;
 }
 
+/** Carimbo CULPADO — vermelho, torto, pronto pra esmagar a carta vencedora. */
+function drawCarimboTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 96;
+  const ctx = c.getContext('2d')!;
+  ctx.strokeStyle = '#ff3b2f';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(8, 8, 240, 80);
+  ctx.fillStyle = '#ff3b2f';
+  ctx.font = `700 44px ${fontFamily('--font-archivo-black', 'sans-serif')}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('CULPADO', 128, 52);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  return tex;
+}
+
 function drawBackTexture(): THREE.CanvasTexture {
   const W = 256;
   const H = Math.round((W * CARD_H) / CARD_W);
@@ -273,7 +295,10 @@ export class RetroMesa {
   private pointer = new THREE.Vector2(-2, -2);
   private cartas: Carta[] = [];
   private provas: Carta[] = [];
-  private maoGrp: THREE.Group | null = null;
+  private versoTex: THREE.CanvasTexture | null = null;
+  private spotCulpado!: THREE.SpotLight;
+  private carimbo: THREE.Mesh | null = null;
+  private culpadoT = -1;
   private reus: Reu[] = [];
   private reacoesVoo: ReacaoVoo[] = [];
   private baloesFala: BalaoFala[] = [];
@@ -462,6 +487,11 @@ export class RetroMesa {
     this.recorteVermelho = new THREE.DirectionalLight(COR.red, 0);
     this.recorteVermelho.position.set(-6, 2.5, -6);
     this.scene.add(hemi, preenchimento, this.recorteVermelho);
+
+    // o spotlight do culpado: apagado até o juiz cravar o martelo
+    this.spotCulpado = new THREE.SpotLight(COR.red, 0, 0, 0.32, 0.35, 2);
+    this.spotCulpado.position.set(0, 6, 0);
+    this.scene.add(this.spotCulpado, this.spotCulpado.target);
 
     // mesa: cilindro baixo e largo; o friso só fica vermelho no veredito
     const tampo = new THREE.Mesh(
@@ -673,7 +703,6 @@ export class RetroMesa {
     this.controls.maxDistance = cfg.dist[1];
     this.controls.minPolarAngle = cfg.polar[0];
     this.controls.maxPolarAngle = cfg.polar[1];
-    this.posicionarMao(ato);
     this.aplicarFov();
     this.controls.update();
   }
@@ -685,36 +714,93 @@ export class RetroMesa {
     this.camera.updateProjectionMatrix();
   }
 
-  /** A mão em leque tem duas poses: na beirada (planos gerais) e ERGUIDA na
-   *  frente do olho (POV primeira pessoa, como quem segura as cartas). */
-  private posicionarMao(ato: Ato) {
-    if (!this.maoGrp) return;
-    if (ato === 'pov') {
-      this.maoGrp.position.set(0, 0.82, 4.05);
-      this.maoGrp.rotation.x = -0.62; // leque inclinado pra trás, de frente pro olho
-    } else {
-      this.maoGrp.position.set(0, 0.6, 3.35);
-      this.maoGrp.rotation.x = 0;
-    }
+  /** Posição de um slot no anel de provas: 8 lugares ao redor da carta preta. */
+  private slotProva(i: number, total = 8): { pos: THREE.Vector3; rotY: number } {
+    const a = (i / total) * Math.PI * 2 + Math.PI / total;
+    return {
+      pos: new THREE.Vector3(Math.sin(a) * 2.35, 0.02, -0.15 + Math.cos(a) * 2.35),
+      rotY: a + (Math.random() - 0.5) * 0.12,
+    };
+  }
+
+  /**
+   * A ponte 2D→3D: a mão do jogador vive na UI da página; ao clicar, a carta
+   * entra no mundo voando da sua cadeira até o próximo slot livre do anel.
+   * Retorna false quando o anel está cheio (8 provas).
+   */
+  jogarCarta(texto: string): boolean {
+    if (this.provas.length >= 8 || !this.versoTex) return false;
+    const frente = drawCardTexture(texto, false);
+    this.texturas.push(frente);
+    const carta = new Carta(frente, this.versoTex, COR.paper);
+    carta.deitarVirada(); // provas chegam lacradas
+    const slot = this.slotProva(this.provas.length);
+    carta.group.rotation.y = slot.rotY;
+    carta.group.position.set(0, 1.3, 4.3); // nasce "de você" (cadeira do POV)
+    this.scene.add(carta.group);
+    this.cartas.push(carta);
+    this.provas.push(carta);
+    carta.anim = {
+      alvoPos: slot.pos,
+      alvoRot: new THREE.Euler(0, slot.rotY, 0),
+      origemPos: carta.group.position.clone(),
+      origemRot: carta.group.rotation.clone(),
+      t0: this.timer.getElapsed(),
+      dur: 0.55,
+    };
+    somCarta();
+    return true;
   }
 
   getAto(): Ato {
     return this.atoAtual;
   }
 
-  /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake incluso. */
+  /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake, spotlight
+   *  vermelho e carimbo CULPADO esmagando a prova sorteada. */
   martelada() {
     if (this.marteloT < 0) {
       this.marteloT = 0;
       this.frisoMat.color.setHex(COR.red);
       this.recorteVermelho.intensity = 0.7;
+      // limpa o veredito anterior
+      if (this.carimbo) {
+        descartarObjeto(this.carimbo);
+        this.carimbo = null;
+      }
+      this.culpadoT = -1;
+      this.spotCulpado.intensity = 0;
     }
+  }
+
+  /** No impacto do martelo: sorteia a prova culpada, acende e carimba. */
+  private condenar() {
+    const alvo = this.provas[Math.floor(Math.random() * this.provas.length)];
+    if (!alvo) return;
+    if (!alvo.viradaPraCima) alvo.flip();
+    const pos = alvo.group.position;
+    this.spotCulpado.position.set(pos.x, 6, pos.z);
+    this.spotCulpado.target.position.set(pos.x, 0, pos.z);
+    this.spotCulpado.intensity = 90;
+    const tex = drawCarimboTexture();
+    this.texturas.push(tex);
+    this.carimbo = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.1, 0.42),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+    );
+    this.carimbo.rotation.x = -Math.PI / 2;
+    this.carimbo.rotation.z = -0.14;
+    this.carimbo.position.set(pos.x, 0.75, pos.z); // acima do pulo do flip
+    this.carimbo.renderOrder = 10;
+    this.scene.add(this.carimbo);
+    this.culpadoT = 0;
   }
 
   private montarCartas(pretas: string[], brancas: string[]) {
     const agora = 0;
-    const verso = drawBackTexture();
-    this.texturas.push(verso);
+    this.versoTex = drawBackTexture();
+    this.texturas.push(this.versoTex);
+    const verso = this.versoTex;
 
     const criar = (texto: string, preta: boolean) => {
       const frente = drawCardTexture(texto, preta);
@@ -732,41 +818,23 @@ export class RetroMesa {
     preta.fixarBase();
     this.entrarDoAlto(preta, agora + 0.2);
 
-    // provas: 4 cartas viradas pra baixo em arco na frente do juiz — clique pra revelar
-    const provasTextos = brancas.slice(0, 4);
+    // provas lacradas num ANEL de 8 slots ao redor da carta preta — a mesa
+    // cheia cabe inteira. 7 chegam prontas; o 8º slot é seu (jogarCarta).
+    const provasTextos = brancas.slice(0, 7);
     provasTextos.forEach((t, i) => {
       const c = criar(t, false);
-      const x = (i - (provasTextos.length - 1) / 2) * 1.1;
-      c.group.position.set(x, 0.02, 1.1);
-      c.group.rotation.y = (Math.random() - 0.5) * 0.16;
+      const slot = this.slotProva(i);
+      c.group.position.copy(slot.pos);
+      c.group.rotation.y = slot.rotY;
       c.deitarVirada();
       c.fixarBase();
       this.provas.push(c);
-      this.entrarDoAlto(c, agora + 0.5 + i * 0.15);
+      this.entrarDoAlto(c, agora + 0.5 + i * 0.12);
     });
 
-    // a SUA mão: leque de verdade num grupo próprio (troca de pose no POV).
-    // Arco + abre-se em ângulo + escalonada em profundidade (sem z-fight).
-    this.maoGrp = new THREE.Group();
-    this.scene.add(this.maoGrp);
-    const mao = brancas.slice(4, 10);
-    mao.forEach((t, i) => {
-      const c = criar(t, false);
-      this.maoGrp!.add(c.group); // re-parenta da cena pro leque
-      const k = i - (mao.length - 1) / 2;
-      c.group.position.set(k * 0.55, -Math.abs(k) * 0.06, i * 0.015);
-      c.group.rotation.y = -k * 0.1;
-      c.group.rotation.z = -k * 0.1; // cartas abrem como num leque segurado
-      c.mesh.rotation.x = -0.35;
-      c.fixarBase();
-      this.entrarDoAlto(c, agora + 1.2 + i * 0.08);
-    });
-    this.posicionarMao(this.atoAtual);
-
-    // pilha de compra
+    // pilha de compra, afastada do anel
     const pilha = new Carta(verso, verso, COR.ink);
-    pilha.group.position.set(-2.6, 0.1, -1.6);
-    pilha.group.scale.setScalar(1);
+    pilha.group.position.set(-3.2, 0.1, -2.0);
     pilha.group.rotation.y = -0.3;
     pilha.mesh.scale.z = 14; // pilha gorda
     pilha.deitarVirada();
@@ -993,6 +1061,7 @@ export class RetroMesa {
           somMartelada();
           for (const r of this.reus) r.setExpressao('choque');
           this.juizReu?.acao('soco');
+          this.condenar();
         }
       } else {
         ang = 0.15 * (1 - (k - 0.58) / 0.42);
@@ -1005,6 +1074,19 @@ export class RetroMesa {
         this.frisoMat.color.setHex(COR.panel);
         this.recorteVermelho.intensity = 0;
       }
+    }
+
+    // o veredito assentando: carimbo desce esmagando, spotlight segura e esvai
+    if (this.culpadoT >= 0 && this.carimbo) {
+      this.culpadoT += dt;
+      const esmago = 1 + 1.8 * Math.exp(-this.culpadoT * 10);
+      this.carimbo.scale.setScalar(esmago);
+      // desce junto com a carta que volta do pulo do flip
+      this.carimbo.position.y = Math.max(0.12, this.carimbo.position.y - dt * 1.4);
+      if (this.culpadoT > 1.4) {
+        this.spotCulpado.intensity = Math.max(0, 90 * (1 - (this.culpadoT - 1.4) / 2));
+      }
+      if (this.culpadoT > 3.4) this.culpadoT = -1; // carimbo fica; luz apagou
     }
 
     // animações de entrada

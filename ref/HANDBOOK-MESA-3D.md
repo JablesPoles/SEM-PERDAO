@@ -131,9 +131,15 @@ silêncio (ok).
   cima; cada ato com limites próprios de órbita e FOV. Botões CÂMERA no topo.
   Branch publicada no GitHub → preview Vercel.
 - [x] POV v2 first person de verdade: olho a 1.5 na cadeira vazia mirando o
-  juiz, FOV 58; a mão vira um leque ERGUIDO na frente do olho (grupo `maoGrp`
-  com pose própria no POV) com arco, abertura e escalonamento anti-z-fight.
-  Mesa cheia de 8 lugares.
+  juiz, FOV 58 por ato. Mesa cheia de 8 lugares (7 réus a cada 45° + você).
+- [x] **Decisão de design (Poles): cartas legíveis são UI 2D; a mesa 3D é o
+  palco.** A mão 3D foi removida — virou mão 2D na página, e `jogarCarta()`
+  é a ponte: clicou na UI, a carta voa da sua cadeira até o anel de provas.
+- [x] Anel de provas com 8 slots ao redor da carta preta (cabem as 8 da mesa
+  cheia); 7 chegam lacradas, o 8º slot é do jogador.
+- [x] Veredito completo: a martelada sorteia uma prova, revela, acende
+  spotlight vermelho e o carimbo CULPADO esmaga a carta (fica na mesa até a
+  próxima martelada; a luz esvai sozinha).
 
 ### Agora (aguardando feedback do Poles)
 - [ ] Validar calibração v4, reações e os 5 atos de câmera (POV/JUIZ novos)
