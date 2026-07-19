@@ -340,6 +340,11 @@ export function useMultiplayer(
   const localAppearanceRef = useRef<CultistAppearance>(
     lobbyPlayers.find((player) => player.id === myPlayerId)?.appearance ?? readLocalAppearance()
   );
+  // Debounce do sync de aparência: rajada de cliques vira UMA mensagem.
+  const appearanceSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (appearanceSyncRef.current) clearTimeout(appearanceSyncRef.current);
+  }, []);
   const myPlayerIdRef = useRef<number | null>(myPlayerId);
   const isConnectedRef = useRef(false);
   const customCardsRef = useRef(customCards);
@@ -1420,16 +1425,28 @@ export function useMultiplayer(
     try {
       localStorage.setItem(CULTIST_APPEARANCE_KEY, JSON.stringify(normalized));
     } catch { /* melhor esforço */ }
-    void channelRef.current?.track({
-      playerId,
-      name: playerName ?? '?',
-      appearance: normalized,
-    });
-    if (isHostRef.current) {
-      applyLobbyAppearance(playerId, normalized);
-      return;
-    }
-    send('lobby_appearance_request', { playerId, appearance: normalized });
+
+    // Eco local imediato: o provador reage no clique, sem esperar a rede.
+    setLobbyPlayers((prev) => prev.map((player) => player.id === playerId
+      ? { ...player, appearance: normalized }
+      : player));
+
+    // A rede só vê a ÚLTIMA escolha. Cada clique custava presence.track +
+    // broadcast do lobby inteiro; uma sequência de cliques no vestiário
+    // estourava o rate limit do Realtime, que FECHA o canal e derrubava a
+    // sala inteira ("Sem conexão"). O debounce colapsa a rajada em 1 sync.
+    if (appearanceSyncRef.current) clearTimeout(appearanceSyncRef.current);
+    appearanceSyncRef.current = setTimeout(() => {
+      appearanceSyncRef.current = null;
+      const atual = localAppearanceRef.current;
+      void channelRef.current?.track({
+        playerId,
+        name: playerName ?? '?',
+        appearance: atual,
+      });
+      if (isHostRef.current) applyLobbyAppearance(playerId, atual);
+      else send('lobby_appearance_request', { playerId, appearance: atual });
+    }, 450);
   }, [playerName, applyLobbyAppearance, send]);
 
   const updateLobbyRules = useCallback((patch: Partial<LobbyRules>) => {
