@@ -353,6 +353,22 @@
   padding: 15px;
 }
 
+/* O vestiário vive no menu inicial. Aqui o réu só se apresenta. */
+.lockedNote {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  padding: 15px;
+  color: rgb(242 239 233 / 46%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lockedNote strong {
+  color: rgb(242 239 233 / 72%);
+  font-weight: 800;
+}
+
 .optionGroup {
   min-width: 0;
   border: 0;

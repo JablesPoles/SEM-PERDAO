@@ -10,7 +10,6 @@ import type {
 import {
   ACCENT_COLORS,
   ACCESSORY_MARKS,
-  APPEARANCE_GROUPS,
   FACE_MARKS,
   ROBE_COLORS,
 } from '../../lib/aparencia';
@@ -29,7 +28,6 @@ interface RitualLobbyProps {
   maxPlayers: number;
   minPlayers: number;
   customCardCount: number;
-  onAppearanceChange: (appearance: CultistAppearance) => void;
   onReadyChange: (ready: boolean) => void;
   onRulesChange: (rules: Partial<LobbyRules>) => void;
   onAddBot: () => void;
@@ -119,7 +117,6 @@ export function RitualLobby({
   maxPlayers,
   minPlayers,
   customCardCount,
-  onAppearanceChange,
   onReadyChange,
   onRulesChange,
   onAddBot,
@@ -199,7 +196,7 @@ export function RitualLobby({
             <section className={styles.panel} aria-labelledby="cultista-title">
               <div className={styles.panelHeader}>
                 <h2 id="cultista-title" className={styles.panelTitle}>Seu réu</h2>
-                <span className={styles.panelMeta}>customização sincronizada</span>
+                <span className={styles.panelMeta}>trancado para a sessão</span>
               </div>
               <div className={styles.previewStage}>
                 {me && (
@@ -212,33 +209,11 @@ export function RitualLobby({
                 )}
               </div>
               {me && (
-                <div className={styles.customizer}>
-                  {APPEARANCE_GROUPS.map((group) => (
-                    <fieldset className={styles.optionGroup} key={group.key}>
-                      <legend className={styles.optionLegend}>{group.label}</legend>
-                      <div className={styles.options}>
-                        {group.options.map((option) => {
-                          const selected = me.appearance[group.key] === option.value;
-                          return (
-                            <button
-                              type="button"
-                              key={option.value}
-                              className={`${styles.optionButton} ${selected ? styles.optionButtonSelected : ''}`}
-                              style={{ '--accent': ACCENT_COLORS[me.appearance.accent] } as CSSProperties}
-                              aria-pressed={selected}
-                              onClick={() => onAppearanceChange({
-                                ...me.appearance,
-                                [group.key]: option.value,
-                              } as CultistAppearance)}
-                            >
-                              {option.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
-                  ))}
-                </div>
+                <p className={styles.lockedNote}>
+                  Seu réu entrou na sala como está. Pra trocar robe, capuz ou
+                  sigilo, volte ao <strong>menu inicial</strong> antes de sentar
+                  na mesa.
+                </p>
               )}
             </section>
           </div>

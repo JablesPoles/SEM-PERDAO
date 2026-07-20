@@ -44,10 +44,18 @@ export function CultistStage3D({ nome, aparencia, celebrarSinal = 0, className }
     };
   }, []);
 
+  // A identidade do objeto `aparencia` muda a CADA broadcast do lobby, porque o
+  // roster é remapeado por inteiro — mas o conteúdo quase nunca muda. Comparar
+  // por identidade fazia o modelo 3D ser destruído e reconstruído a cada
+  // presença, "pronto" ou tique de countdown, até o canvas morrer. Compara por
+  // valor: só uma troca real de roupa reconstrói o réu.
+  const chaveAparencia = JSON.stringify(aparencia);
   useEffect(() => {
     pedidoRef.current = { nome, aparencia };
     vitrineRef.current?.setReu(nome, aparencia);
-  }, [nome, aparencia]);
+    // `aparencia` entra pela chave serializada acima, de propósito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nome, chaveAparencia]);
 
   useEffect(() => {
     if (celebrarSinal > 0) vitrineRef.current?.celebrar();

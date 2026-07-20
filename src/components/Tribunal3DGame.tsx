@@ -390,14 +390,20 @@ export function Tribunal3DGame(props: Tribunal3DGameProps) {
   const [loading, setLoading] = useState(true);
   const [webglError, setWebglError] = useState(false);
   const cameraKey = `${gs.round}:${gs.phase}`;
-  const defaultAto: Ato = gs.phase === 'judging' ? 'mesa' : gs.phase === 'round-end' ? 'juiz' : 'pov';
-  const [cameraChoice, setCameraChoice] = useState<{ key: string; ato: Ato }>({ key: '', ato: 'pov' });
+  // A mesa aberta é o enquadramento-assinatura do jogo (o mesmo da demo em
+  // /3d, que é o default da engine). O POV continua a um clique/seta de
+  // distância, mas deixou de ser a primeira coisa que se vê.
+  const defaultAto: Ato = gs.phase === 'round-end' ? 'juiz' : 'mesa';
+  const [cameraChoice, setCameraChoice] = useState<{ key: string; ato: Ato }>({ key: '', ato: 'mesa' });
   const activeAto = cameraChoice.key === cameraKey ? cameraChoice.ato : defaultAto;
   const selectionKey = `${gs.round}:${gs.blackCard?.id ?? ''}:${gs.phase}`;
   const [selection, setSelection] = useState<{ key: string; ids: string[] }>({ key: '', ids: [] });
   const selectedIds = selection.key === selectionKey ? selection.ids : [];
   const [impact, setImpact] = useState<{ kind: Reacao3D; key: number } | null>(null);
-  const [quality, setQuality] = useState<Qualidade3D>('media');
+  // A demo roda em fidelidade máxima (pixelSize 1, sombras ligadas). O jogo
+  // nascia em 'media', que no compacto ainda dobrava o pixelSize — era metade
+  // do motivo da mesa online parecer outro jogo.
+  const [quality, setQuality] = useState<Qualidade3D>('alta');
   const [reducedMotion, setReducedMotion] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
   const [audioVolume, setAudioVolume] = useState(0.8);
@@ -443,11 +449,9 @@ export function Tribunal3DGame(props: Tribunal3DGameProps) {
             window.setTimeout(() => setImpact(null), kind === 'tomate' ? 1800 : 650);
           },
         });
-        const initialAto: Ato = viewRef.current.phase === 'judging'
-          ? 'mesa'
-          : viewRef.current.phase === 'round-end'
-            ? 'juiz'
-            : 'pov';
+        const initialAto: Ato = viewRef.current.phase === 'round-end'
+          ? 'juiz'
+          : 'mesa';
         scene.setAto(initialAto);
         sceneRef.current = scene;
         setLoading(false);

@@ -479,7 +479,6 @@ export default function SalaPage({ params }: PageProps) {
         maxPlayers={MAX_PLAYERS}
         minPlayers={MIN_PLAYERS}
         customCardCount={customCardCount}
-        onAppearanceChange={mp.setAppearance}
         onReadyChange={mp.setReady}
         onRulesChange={mp.updateLobbyRules}
         onAddBot={mp.addBot}
