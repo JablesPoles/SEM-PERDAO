@@ -354,6 +354,10 @@ export function useMultiplayer(
   // Sequência do lobby: broadcast atrasado não sobrescreve estado mais novo.
   const lobbySeqRef = useRef(restoredHost.lobbySeq);
   const lastLobbySeqRef = useRef(-1);
+  // Marca do último commit que REALMENTE invalida consentimento (troca de
+  // regras). Consentimento anterior a ela não vale; o resto do churn do
+  // lobby — presença, aparência, countdown — não derruba um "pronto".
+  const consentEpochRef = useRef(-1);
 
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Relógios do host: bots + limite de tempo dos humanos.
@@ -412,7 +416,11 @@ export function useMultiplayer(
 
   const commitLobby = useCallback((
     players: LobbyPlayer[],
-    options: { rules?: LobbyRules; countdownEndsAt?: number | null } = {}
+    options: {
+      rules?: LobbyRules;
+      countdownEndsAt?: number | null;
+      invalidatesConsent?: boolean;
+    } = {}
   ) => {
     const normalizedPlayers = normalizeLobbyPlayers(players);
     const nextRules = options.rules ?? lobbyRulesRef.current;
@@ -427,6 +435,7 @@ export function useMultiplayer(
     setLobbyRules(nextRules);
     setCountdownEndsAt(nextCountdown);
     lobbySeqRef.current++;
+    if (options.invalidatesConsent) consentEpochRef.current = lobbySeqRef.current;
     broadcastLobby(normalizedPlayers);
     persistHostLobby();
   }, [broadcastLobby, persistHostLobby]);
@@ -1021,9 +1030,12 @@ export function useMultiplayer(
             lobbySeq?: number;
           };
           if (!Number.isInteger(playerId) || typeof ready !== 'boolean') return;
-          // Consentimento enviado antes de uma troca de regras/roster não vale
-          // para o ritual novo.
-          if (lobbySeq !== undefined && lobbySeq !== lobbySeqRef.current) return;
+          // Consentimento enviado antes de uma troca de regras não vale para o
+          // ritual novo. Igualdade estrita aqui era fatal: qualquer commit de
+          // lobby no meio do caminho (presença, aparência com debounce,
+          // countdown) já tinha avançado a sequência, e o "pronto" do
+          // convidado era descartado em silêncio — a partida nunca começava.
+          if (lobbySeq !== undefined && lobbySeq < consentEpochRef.current) return;
           applyLobbyReady(playerId, ready);
         })
         .on('broadcast', { event: 'lobby_appearance_request' }, ({ payload }) => {
@@ -1410,6 +1422,12 @@ export function useMultiplayer(
       applyLobbyReady(playerId, ready);
       return;
     }
+    // Eco local: o selo acende no clique. O broadcast do host continua sendo a
+    // verdade e corrige logo em seguida — sem isso, um pedido recusado deixa o
+    // convidado apertando um botão que nunca reage.
+    setLobbyPlayers((prev) => prev.map((player) => player.id === playerId
+      ? { ...player, ready }
+      : player));
     send('lobby_ready_request', {
       playerId,
       ready,
@@ -1459,7 +1477,11 @@ export function useMultiplayer(
       ...player,
       ready: player.isBot === true,
     }));
-    commitLobby(resetPlayers, { rules: nextRules, countdownEndsAt: null });
+    commitLobby(resetPlayers, {
+      rules: nextRules,
+      countdownEndsAt: null,
+      invalidatesConsent: true,
+    });
   }, [commitLobby]);
 
   const startGame = useCallback(() => {
