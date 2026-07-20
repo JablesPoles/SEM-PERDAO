@@ -361,14 +361,50 @@ button {
 .tribunal-camera button:hover,
 .tribunal-camera button.is-active { color: #f2efe9; border-color: #ff3b2f; background: rgba(255, 59, 47, .13); }
 
-.tribunal-settings {
+/* Barra enxuta no topo direito, como a demo: só o som fica à vista. */
+.tribunal-settings-bar {
   position: absolute;
-  z-index: 10;
-  top: 154px;
+  z-index: 11;
+  top: max(14px, env(safe-area-inset-top));
+  /* À esquerda: o canto direito é do placar. */
   left: max(14px, env(safe-area-inset-left));
   display: flex;
   gap: 5px;
 }
+
+.tribunal-settings-bar button {
+  min-height: 32px;
+  padding: 0 10px;
+  color: rgba(242, 239, 233, .62);
+  background: rgba(23, 22, 26, .9);
+  border: 1px solid rgba(242, 239, 233, .2);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .16em;
+  box-shadow: 3px 4px 0 rgba(0, 0, 0, .4);
+  transition: color .15s, border-color .15s;
+}
+
+.tribunal-settings-bar button:hover {
+  color: #f2efe9;
+  border-color: rgba(242, 239, 233, .4);
+}
+
+/* A gaveta desce da barra; fechada por padrão. */
+.tribunal-settings {
+  position: absolute;
+  z-index: 10;
+  top: 56px;
+  left: max(14px, env(safe-area-inset-left));
+  display: flex;
+  gap: 5px;
+  padding: 6px;
+  background: rgba(23, 22, 26, .92);
+  border: 1px solid rgba(242, 239, 233, .16);
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, .42);
+}
+
+.tribunal-settings[hidden] { display: none; }
 
 .tribunal-settings label {
   display: flex;

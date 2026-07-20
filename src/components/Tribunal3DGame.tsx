@@ -109,25 +109,37 @@ function TimerDial({ gs }: { gs: TimedState }) {
   );
 }
 
-function BlackEvidence({ text, pick }: { text: string; pick: number }) {
-  const [open, setOpen] = useState(false);
+/**
+ * O processo físico da demo em /3d: papel timbrado, tarja vermelha na lombada
+ * e número de autos. Some a caixinha no canto — a pergunta é o centro da mesa.
+ */
+function BlackEvidence({ text, pick, round }: { text: string; pick: number; round: number }) {
   return (
-    <>
-      <button className="tribunal-black-card" onClick={() => setOpen(true)} aria-haspopup="dialog">
-        <span>PROVA DO CRIME · {pick > 1 ? `${pick} RESPOSTAS` : '1 RESPOSTA'}</span>
-        <strong>{text}</strong>
-        <small>TOQUE PARA AMPLIAR</small>
-      </button>
-      {open && (
-        <div className="tribunal-modal" role="dialog" aria-modal="true" aria-label="Carta preta da rodada" onClick={() => setOpen(false)}>
-          <div className="tribunal-modal__black" onClick={(event) => event.stopPropagation()}>
-            <span>RODADA EM JULGAMENTO</span>
-            <strong>{text}</strong>
-            <button onClick={() => setOpen(false)}>FECHAR ×</button>
-          </div>
+    <div className="absolute top-[4.7rem] sm:top-[5.4rem] inset-x-0 flex justify-center px-3 pointer-events-none z-10">
+      <article
+        className="relative w-[min(34rem,94vw)] bg-[#111015] border border-[#e8dfcf]/30 px-5 py-3.5 sm:px-6 sm:py-4 shadow-[7px_9px_0_rgba(0,0,0,0.42),0_18px_44px_rgba(0,0,0,0.5)]"
+        style={{
+          clipPath: 'polygon(0.8% 2%, 99% 0, 100% 94%, 97% 100%, 1.4% 98%, 0 8%)',
+          backgroundImage: 'repeating-linear-gradient(0deg,rgba(255,255,255,.016) 0 1px,transparent 1px 4px)',
+        }}
+      >
+        <span className="absolute left-0 top-0 bottom-0 w-1.5 bg-red" />
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <span className="text-red text-[8px] font-black tracking-[0.24em] uppercase">
+            AUTOS DO PROCESSO • {String(round).padStart(2, '0')}
+          </span>
+          <span className="text-paper/30 text-[7px] font-mono tracking-widest">SP-{2026 + round}-P</span>
         </div>
-      )}
-    </>
+        <p className="font-display text-paper text-[17px] sm:text-[21px] leading-[1.18] pr-3">
+          {text}
+        </p>
+        <div className="mt-2 flex items-center gap-2 text-[8px] font-bold tracking-[0.18em] uppercase text-paper/38">
+          <span className="h-px flex-1 bg-paper/15" />
+          {pick > 1 ? `escolha ${pick} provas abaixo` : 'escolha a prova abaixo'}
+          <span className="h-px w-5 bg-red/70" />
+        </div>
+      </article>
+    </div>
   );
 }
 
@@ -225,33 +237,71 @@ function WhiteHand({ cards, selectedIds, pick, onToggle, onSubmit }: {
   onSubmit: () => void;
 }) {
   return (
-    <section className="tribunal-hand" aria-label="Sua mão de cartas">
-      <header>
-        <span>SUA DEFESA · ESCOLHA {pick}</span>
-        <span>{selectedIds.length}/{pick}</span>
-      </header>
-      <div className="tribunal-hand__cards">
-        {cards.map((card, index) => {
-          const selectedIndex = selectedIds.indexOf(card.id);
-          return (
-            <button
-              key={card.id}
-              className={selectedIndex >= 0 ? 'is-selected' : ''}
-              style={{ '--card-tilt': `${((index % 5) - 2) * 0.7}deg` } as React.CSSProperties}
-              onClick={() => onToggle(card.id)}
-              aria-pressed={selectedIndex >= 0}
-            >
-              {selectedIndex >= 0 && <i>{selectedIndex + 1}</i>}
-              <strong>{card.text}</strong>
-              <small>SEM PERDÃO*</small>
-            </button>
-          );
-        })}
+    <>
+      {/* Leque de provas da demo: papel envelhecido, sobreposto e torto, sem a
+          faixa branca chapada que fazia a mesa online parecer outro jogo. */}
+      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 pb-1.5 sm:pb-2 pointer-events-auto w-[calc(100vw-1rem)] sm:w-auto max-w-[calc(100vw-1rem)] sm:max-w-[58vw] z-10">
+        <div className="flex justify-start sm:justify-center overflow-x-auto px-4 pt-7 pb-2">
+          {cards.map((card, index) => {
+            const selectedIndex = selectedIds.indexOf(card.id);
+            const selected = selectedIndex >= 0;
+            return (
+              <div
+                key={card.id}
+                className="relative shrink-0"
+                style={{
+                  marginLeft: index === 0 ? 0 : '-1.05rem',
+                  transform: `rotate(${((index % 5) - 2) * 1.15}deg) translateY(${index % 2 ? 2 : 0}px)`,
+                  zIndex: selected ? 30 : index,
+                }}
+              >
+                <button
+                  onClick={() => onToggle(card.id)}
+                  aria-pressed={selected}
+                  aria-label={`Prova: ${card.text}`}
+                  className={`group relative w-[6.35rem] h-[9.25rem] sm:w-[7rem] sm:h-[10.2rem] bg-[#e7decc] border-2 p-2.5 sm:p-3 text-left flex flex-col transition-transform duration-150 hover:-translate-y-5 hover:z-20 active:scale-95 shadow-[3px_4px_0_#17161a,0_18px_30px_-14px_rgba(0,0,0,0.95)] overflow-hidden ${
+                    selected ? 'border-red -translate-y-5' : 'border-[#19171a]'
+                  }`}
+                  style={{
+                    clipPath: 'polygon(1% 0, 97% 1%, 100% 5%, 98% 96%, 94% 100%, 2% 98%, 0 6%)',
+                    backgroundImage:
+                      'radial-gradient(circle at 82% 16%,rgba(91,55,32,.10) 0 2px,transparent 3px),repeating-linear-gradient(3deg,rgba(45,36,26,.024) 0 1px,transparent 1px 5px)',
+                  }}
+                >
+                  <span className="absolute -top-1 right-2 w-5 h-3 bg-red/65 rotate-3 opacity-70" />
+                  {selected && pick > 1 && (
+                    <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-red text-white text-[9px] font-black flex items-center justify-center">
+                      {selectedIndex + 1}
+                    </span>
+                  )}
+                  <span className="text-[6px] font-black tracking-[0.2em] text-red uppercase border-b border-ink/15 pb-1 mb-1.5">
+                    EVIDÊNCIA {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <span className="text-[10.5px] sm:text-[11px] font-black text-ink leading-[1.18] flex-1 overflow-hidden">
+                    {card.text}
+                  </span>
+                  <span className="flex items-end justify-between gap-1 text-[5.5px] font-black tracking-[0.14em] text-ink/42 mt-1 border-t border-ink/15 pt-1">
+                    <span>SEM PERDÃO<span className="text-red">*</span></span>
+                    <span className="font-mono">#{String(index + 1).padStart(2, '0')}</span>
+                  </span>
+                  <span className="absolute inset-1 border border-ink/[0.06] pointer-events-none" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <button className="tribunal-confirm" disabled={selectedIds.length !== pick} onClick={onSubmit}>
-        {selectedIds.length === pick ? 'LACRAR DEPOIMENTO' : `SELECIONE ${pick - selectedIds.length}`}
-      </button>
-    </section>
+
+      <div className="absolute bottom-40 sm:bottom-0 right-0 p-3 sm:p-6 pointer-events-auto z-10">
+        <button
+          onClick={onSubmit}
+          disabled={selectedIds.length !== pick}
+          className="btn-red h-12 px-5 border-2 border-ink font-display text-[14px] tracking-wide shadow-[4px_5px_0_#17161a] active:translate-y-1 active:shadow-none transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {selectedIds.length === pick ? 'LACRAR DEPOIMENTO' : `ESCOLHA ${pick - selectedIds.length}`}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -390,11 +440,10 @@ export function Tribunal3DGame(props: Tribunal3DGameProps) {
   const [loading, setLoading] = useState(true);
   const [webglError, setWebglError] = useState(false);
   const cameraKey = `${gs.round}:${gs.phase}`;
-  // A mesa aberta é o enquadramento-assinatura do jogo (o mesmo da demo em
-  // /3d, que é o default da engine). O POV continua a um clique/seta de
-  // distância, mas deixou de ser a primeira coisa que se vê.
-  const defaultAto: Ato = gs.phase === 'round-end' ? 'juiz' : 'mesa';
-  const [cameraChoice, setCameraChoice] = useState<{ key: string; ato: Ato }>({ key: '', ato: 'mesa' });
+  // A demo abre no plano aberto só enquanto espera; ao jogar ela corta pro POV
+  // baixo e perto, que é o enquadramento-assinatura da mesa. Mantemos isso.
+  const defaultAto: Ato = gs.phase === 'judging' ? 'mesa' : gs.phase === 'round-end' ? 'juiz' : 'pov';
+  const [cameraChoice, setCameraChoice] = useState<{ key: string; ato: Ato }>({ key: '', ato: 'pov' });
   const activeAto = cameraChoice.key === cameraKey ? cameraChoice.ato : defaultAto;
   const selectionKey = `${gs.round}:${gs.blackCard?.id ?? ''}:${gs.phase}`;
   const [selection, setSelection] = useState<{ key: string; ids: string[] }>({ key: '', ids: [] });
@@ -407,6 +456,7 @@ export function Tribunal3DGame(props: Tribunal3DGameProps) {
   const [reducedMotion, setReducedMotion] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
   const [audioVolume, setAudioVolume] = useState(0.8);
+  const [showSettings, setShowSettings] = useState(false);
   const me = gs.players.find((player) => player.id === props.myId);
   const democracy = getGameMode(gs) === 'democracy';
   const iAmJudge = !democracy && gs.czarId === props.myId;
@@ -449,9 +499,11 @@ export function Tribunal3DGame(props: Tribunal3DGameProps) {
             window.setTimeout(() => setImpact(null), kind === 'tomate' ? 1800 : 650);
           },
         });
-        const initialAto: Ato = viewRef.current.phase === 'round-end'
-          ? 'juiz'
-          : 'mesa';
+        const initialAto: Ato = viewRef.current.phase === 'judging'
+          ? 'mesa'
+          : viewRef.current.phase === 'round-end'
+            ? 'juiz'
+            : 'pov';
         scene.setAto(initialAto);
         sceneRef.current = scene;
         setLoading(false);
@@ -559,21 +611,16 @@ export function Tribunal3DGame(props: Tribunal3DGameProps) {
         Fase {gs.phase}, rodada {gs.round}. {gs.revealed.length} de {gs.submissions.length} provas reveladas.
       </div>
 
-      {gs.blackCard && gs.phase !== 'game-end' && <BlackEvidence text={gs.blackCard.text} pick={pick} />}
+      {gs.blackCard && gs.phase !== 'game-end' && (
+        <BlackEvidence text={gs.blackCard.text} pick={pick} round={gs.round} />
+      )}
       <TimerDial gs={gs} />
       <ScoreRail gs={gs} myId={props.myId} />
       <CameraDock active={activeAto} onChange={changeAto} />
 
-      <div className="tribunal-settings">
-        <label>
-          <span>QUALIDADE</span>
-          <select value={quality} onChange={(event) => setQuality(event.target.value as Qualidade3D)}>
-            <option value="baixa">BAIXA</option><option value="media">MÉDIA</option><option value="alta">ALTA</option>
-          </select>
-        </label>
-        <button onClick={() => setReducedMotion((value) => !value)} aria-pressed={reducedMotion}>
-          TREMOR {reducedMotion ? 'OFF' : 'ON'}
-        </button>
+      {/* A demo mostra só o botão de som. Qualidade/tremor/volume viram gaveta:
+          continuam acessíveis, mas param de parecer painel de laboratório. */}
+      <div className="tribunal-settings-bar">
         <button
           onClick={() => {
             const next = !audioMuted;
@@ -583,7 +630,26 @@ export function Tribunal3DGame(props: Tribunal3DGameProps) {
           aria-pressed={!audioMuted}
           title={audioMuted ? 'Ativar música e sons' : 'Silenciar música e sons'}
         >
-          SOM {audioMuted ? 'OFF' : 'ON'}
+          {audioMuted ? 'SOM OFF' : '♪ SOM'}
+        </button>
+        <button
+          onClick={() => setShowSettings((value) => !value)}
+          aria-expanded={showSettings}
+          title="Ajustes de vídeo e volume"
+        >
+          ⚙
+        </button>
+      </div>
+
+      <div className="tribunal-settings" hidden={!showSettings}>
+        <label>
+          <span>QUALIDADE</span>
+          <select value={quality} onChange={(event) => setQuality(event.target.value as Qualidade3D)}>
+            <option value="baixa">BAIXA</option><option value="media">MÉDIA</option><option value="alta">ALTA</option>
+          </select>
+        </label>
+        <button onClick={() => setReducedMotion((value) => !value)} aria-pressed={reducedMotion}>
+          TREMOR {reducedMotion ? 'OFF' : 'ON'}
         </button>
         <label className="tribunal-settings__volume">
           <span>VOLUME</span>
