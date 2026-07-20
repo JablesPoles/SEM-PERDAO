@@ -13,6 +13,49 @@ nem posição, nem animação, nem cor.
 Não tente aproximar o `Tribunal3DGame` atual do visual da demo peça por peça.
 Já tentamos; sempre falta alguma coisa. Substitua.
 
+## A causa raiz (achado decisivo — leia antes de tudo)
+
+A engine `retroMesa.ts` tem **dois caminhos**, e o multiplayer entrou no errado:
+
+```ts
+this.realMode = !!opts.mesaView;   // linha 487
+```
+
+- A **demo** não passa `mesaView`. Ela dirige a cena por métodos de teatro:
+  `prepararRodada(preta, brancas)`, `jogarCarta(texto)`,
+  `julgar(onRevela, onFim)`, `martelada(cb, proofId)`, `falar`, `reagir`,
+  `arremessarEm`. **São esses métodos que produzem as animações, o fluxo de
+  rodada e a leitura das provas.**
+- O **multiplayer** passa `mesaView` e só chama `syncMesa(view)` — um snapshot
+  estático. Nunca chama nenhum método de teatro.
+
+**Os métodos animados NÃO são bloqueados pelo `realMode`.** Conferido: só
+`montarCartas` olha essa flag (pra não montar a rodada de demonstração). Ou
+seja, o multiplayer sempre pôde animar — só não pede.
+
+É por isso que "os modelos, as animações, o fluxo dos round" parecem outro
+jogo: não há nada de errado com os modelos. Falta disparar o teatro.
+
+### O ponto de atrito a resolver
+
+`prepararRodada(preta, brancas)` recebe as respostas dos outros de uma vez,
+porque na demo elas são pré-sorteadas. No online elas chegam ao longo da fase
+e ficam ocultas até o julgamento. Mapeamento correto:
+
+| momento no online | chamada |
+|---|---|
+| entra em `submitting` | `prepararRodada(gs.blackCard.text, [])` |
+| eu envio minha carta | `jogarCarta(texto)` |
+| outro envia | carta virada pra baixo na mesa (hoje só `syncMesa` faz isso) |
+| entra em `judging` | as submissões já vêm no estado; alimentar a fila do `julgar` |
+| juiz clica revelar | avançar UM item da fila (a demo revela em cadeia sozinha) |
+| `round-end` | `martelada(cb, proofId)` |
+
+`julgar()` hoje roda a sequência inteira sozinha e exige que VOCÊ tenha jogado.
+Para o online é preciso uma variante passo-a-passo — revelar sob comando do
+juiz — ou reusar a fila interna expondo um `revelarProxima()`. **Essa é a única
+mudança real de engine do projeto; todo o resto é fiação.**
+
 ## Passo 1 — extrair a casca da demo
 
 Criar `src/components/tribunal/MesaTribunal.tsx` com **exatamente** o JSX da
