@@ -3,7 +3,7 @@ import { use, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMultiplayer } from '../../../hooks/useMultiplayer';
 import { getPhaseId, MAX_PLAYERS, MIN_PLAYERS } from '../../../lib/game';
-import { Tribunal3DGame } from '../../../components/Tribunal3DGame';
+import { MesaOnline } from '../../../components/MesaOnline';
 import { ChatPanel } from '../../../components/ChatPanel';
 import { CustomDeckEditor } from '../../../components/CustomDeckEditor';
 import { RitualLobby } from '../../../components/lobby/RitualLobby';
@@ -312,7 +312,7 @@ export default function SalaPage({ params }: PageProps) {
 
     return (
       <>
-        <Tribunal3DGame
+        <MesaOnline
           state={mp.gameState}
           myId={mp.myPlayerId ?? 0}
           onSubmit={(cardIds) => mp.sendAction({
@@ -332,8 +332,9 @@ export default function SalaPage({ params }: PageProps) {
           })}
           onRestart={() => { void mp.disconnect().finally(() => router.push('/')); }}
           reactions={mp.reactions}
-          messages={mp.chatMessages}
+          messages={allMessages}
           onReact={mp.sendReaction}
+          onSendChat={mp.sendChat}
         />
 
         {/* Host: alguém quer entrar no meio do jogo */}
@@ -454,8 +455,7 @@ export default function SalaPage({ params }: PageProps) {
             </div>
           </div>
         )}
-
-        {chatWidget}
+        {/* A mesa 3D já tem o chat da audiência embutido; sem widget flutuante aqui. */}
       </>
     );
   }
