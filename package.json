@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test": "npm run test:game-guards && npm run test:mesa-view",
     "test:game-guards": "playwright test tests/game-guards.spec.ts",
-    "test:mesa-view": "node --test src/lib/three/mesaView.test.mjs"
+    "test:mesa-view": "node --test src/lib/three/mesaView.test.mjs",
+    "audio:gen": "node scripts/generate-audio.mjs",
+    "audio:list": "node scripts/generate-audio.mjs -- --list"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.3",

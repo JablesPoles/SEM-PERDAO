@@ -20,6 +20,8 @@ import {
 } from '@/lib/game';
 import { projectMesaView } from '@/lib/three/mesaView';
 import { isMuted, setMuted } from '@/lib/sounds';
+import { setMusicScene, startAmbience, stopAllMusic } from '@/lib/music';
+import { narrate, preloadNarration, type NarrationEvent } from '@/lib/narrator';
 import type { Ato, Reacao3D, RetroMesa } from '@/lib/three/retroMesa';
 import type { BlackCard, ChatMessage, GameState, Reaction, WhiteCard } from '@/lib/types';
 
@@ -257,9 +259,13 @@ export function MesaOnline(props: MesaOnlineProps) {
       }
     };
     void start();
+    // trilha do porão: ambiente por baixo + falas prontas (no-op se sem áudio)
+    startAmbience();
+    preloadNarration();
     return () => {
       disposed = true;
       cancelAnimationFrame(muteFrame);
+      stopAllMusic();
       const scene = sceneRef.current as (RetroMesa & { __resize?: () => void }) | null;
       if (scene?.__resize) window.removeEventListener('resize', scene.__resize);
       scene?.dispose();
@@ -325,10 +331,13 @@ export function MesaOnline(props: MesaOnlineProps) {
     const primeiraVez = prevBeatRef.current === '';
     prevBeatRef.current = beat;
 
+    // trilha + narração acompanham a fase (no-op silencioso se sem áudio)
+    let cena: NarrationEvent | null = null;
     let anuncioNovo: { texto: string; tipo: 'normal' | 'stamp'; duracao?: number } | null = null;
     if (gs.phase === 'submitting') {
       scene.setAto('pov');
-      if (!primeiraVez) anuncioNovo = { texto: `RODADA ${gs.round}`, tipo: 'normal', duracao: 900 };
+      setMusicScene('lobby');
+      if (!primeiraVez) { anuncioNovo = { texto: `RODADA ${gs.round}`, tipo: 'normal', duracao: 900 }; cena = 'round-open'; }
       const plateia = gs.players.filter((p) => p.id !== props.myId && p.id !== gs.czarId && p.connected !== false);
       const orador = plateia[gs.round % Math.max(1, plateia.length)];
       if (orador) {
@@ -339,6 +348,8 @@ export function MesaOnline(props: MesaOnlineProps) {
       // abre de cima ("varredura das provas") e desce pro plano das provas.
       // Guarda o timer: a primeira revelação cancela o sweep e assume o foco.
       scene.setAto('cima');
+      setMusicScene('tension');
+      cena = 'judging';
       if (judgeIntroTimerRef.current) clearTimeout(judgeIntroTimerRef.current);
       judgeIntroTimerRef.current = setTimeout(() => sceneRef.current?.setAto('provas'), 900);
       anuncioNovo = { texto: 'ABRINDO AS PROVAS', tipo: 'normal', duracao: 700 };
@@ -349,6 +360,7 @@ export function MesaOnline(props: MesaOnlineProps) {
       const vencedor = gs.players.find((p) => p.id === gs.roundWinnerId);
       if (vencedor) {
         anuncioNovo = { texto: `CULPADO: ${vencedor.name}`, tipo: 'stamp', duracao: 640 };
+        cena = 'guilty';
         const alvoClose = vencedor.id;
         // ágil: o close arranca logo depois do martelo, não fica esperando
         window.setTimeout(() => sceneRef.current?.closeUpReu(alvoClose), 280);
@@ -356,8 +368,12 @@ export function MesaOnline(props: MesaOnlineProps) {
     } else if (gs.phase === 'game-end') {
       // plano da mesa pro blackout + holofote no campeão; o anúncio abre a festa
       scene.setAto('mesa');
+      setMusicScene('finale');
+      cena = 'finale';
       anuncioNovo = { texto: 'TRIBUNAL ENCERRADO', tipo: 'normal', duracao: 2000 };
     }
+
+    if (cena) narrate(cena);
 
     if (anuncioNovo) {
       if (anuncioTimerRef.current) clearTimeout(anuncioTimerRef.current);

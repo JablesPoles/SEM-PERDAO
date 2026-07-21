@@ -241,6 +241,24 @@ function scheduleCue(audio: AudioContext, destination: AudioNode, name: SoundNam
   }
 }
 
+// Cue do jogo → asset gerado no ElevenLabs (public/audio/<path>.mp3). Cues sem
+// entrada aqui (ex.: 'turn') continuam 100% sintetizados. Import lazy dentro
+// das funções evita ciclo de módulo com audioAssets.
+const CUE_ASSETS: Partial<Record<SoundName, string>> = {
+  play: 'sfx/card-play',
+  flip: 'sfx/card-flip',
+  stamp: 'sfx/hammer-stamp',
+  tick: 'sfx/tick',
+  countdown: 'sfx/countdown-beep',
+  roundWin: 'sfx/round-win',
+  chat: 'sfx/chat-blip',
+  victory: 'music/victory-sting',
+  defeat: 'music/defeat-sting',
+  ending: 'music/finale-theme',
+};
+
+let preloaded = false;
+
 export function playSound(name: SoundName) {
   if (isMuted()) return;
   const requestedAt = Date.now();
@@ -253,6 +271,25 @@ export function playSound(name: SoundName) {
     if (Date.now() - requestedAt > 600 || isMuted()) return;
     const destination = getAudioDestination();
     if (!destination || destination.context !== running) return;
+
+    // Na primeira reprodução (áudio liberado por gesto), aquece os arquivos.
+    if (!preloaded) {
+      preloaded = true;
+      import('./audioAssets').then(({ preloadAssets }) => {
+        preloadAssets(Object.values(CUE_ASSETS) as string[]);
+      });
+    }
+
+    // Arquivo do ElevenLabs se já carregado; senão toca o sintetizado agora e
+    // aquece o arquivo pra próxima vez.
+    const assetPath = CUE_ASSETS[name];
+    if (assetPath) {
+      import('./audioAssets').then(({ hasAsset, playAsset, loadAsset }) => {
+        if (hasAsset(assetPath)) playAsset(assetPath);
+        else { scheduleCue(running, destination, name); void loadAsset(assetPath); }
+      });
+      return;
+    }
     scheduleCue(running, destination, name);
   };
 
