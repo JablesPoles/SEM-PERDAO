@@ -33,10 +33,11 @@ jogo (volume/mute globais). Se um arquivo faltar, o jogo cai no som
 ## Onde mexer
 
 - `audio/manifest.mjs` — a direção sonora: cada som → prompt. Comece por aqui.
-- `scripts/generate-audio.mjs` — o gerador (endpoints do ElevenLabs).
+- `scripts/generate-audio.mjs` — o gerador, via SDK oficial `@elevenlabs/elevenlabs-js`
+  (`textToSoundEffects.convert`, `music.compose`, `textToSpeech.convert`).
 - `src/lib/audioAssets.ts` — carrega/toca os arquivos pelo mixer, com cache.
 - `src/lib/sounds.ts` — mapa cue→arquivo (`CUE_ASSETS`) + fallback sintetizado.
 
-> Os endpoints do ElevenLabs (sound-generation, music, text-to-speech) mudam de
-> vez em quando. Se algo retornar erro, confira os parâmetros em
-> `scripts/generate-audio.mjs` contra a doc atual — está tudo centralizado lá.
+> Música sai instrumental (`forceInstrumental`) e tudo em `mp3_44100_128`. Se um
+> tipo falhar (ex.: Music fora do seu plano), o script segue nos outros e você vê
+> o motivo por linha; regere só o que faltou com `--only=`.

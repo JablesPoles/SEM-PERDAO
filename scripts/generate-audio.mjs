@@ -17,11 +17,12 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { MANIFEST } from '../audio/manifest.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, 'public', 'audio');
-const API = 'https://api.elevenlabs.io/v1';
+const OUTPUT_FORMAT = 'mp3_44100_128';
 // Voz default: "Bill" (grave, sóbria). Troque por ELEVENLABS_VOICE_ID.
 const DEFAULT_VOICE_ID = 'pqHfZKP75CvOlQylNhV4';
 
@@ -50,50 +51,52 @@ async function fileExists(path) {
   try { await access(path); return true; } catch { return false; }
 }
 
-// ── chamadas por tipo ───────────────────────────────────────────────────────
-async function requestBytes(url, body, apiKey) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'xi-api-key': apiKey, 'content-type': 'application/json', accept: 'audio/mpeg' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} ${res.statusText} — ${detail.slice(0, 300)}`);
-  }
-  return Buffer.from(await res.arrayBuffer());
+// ── chamadas por tipo (SDK oficial @elevenlabs/elevenlabs-js) ───────────────
+// Todos os métodos devolvem um ReadableStream<Uint8Array>; juntamos em Buffer.
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
 }
 
-function generate(entry, apiKey) {
+async function generate(entry, client) {
   const seconds = Math.max(0.5, Number(entry.durationSeconds) || 2);
+  let stream;
   switch (entry.kind) {
     case 'sfx':
     case 'ambience':
-      // Sound Effects: texto → efeito. loop=true pede um som costurável.
-      return requestBytes(`${API}/sound-generation`, {
+      // Sound Effects. loop costurável exige o modelo v2 (só pro ambiente).
+      stream = await client.textToSoundEffects.convert({
         text: entry.prompt,
-        duration_seconds: Math.min(30, seconds),
-        prompt_influence: entry.promptInfluence ?? 0.6,
+        durationSeconds: Math.min(30, seconds),
+        promptInfluence: entry.promptInfluence ?? 0.6,
         loop: entry.loop === true,
-      }, apiKey);
+        ...(entry.loop === true ? { modelId: 'eleven_text_to_sound_v2' } : {}),
+        outputFormat: OUTPUT_FORMAT,
+      });
+      break;
     case 'music':
-      // Music: texto → trilha. Endpoint mais novo — confira em docs se mudar.
-      return requestBytes(`${API}/music`, {
+      // Music: texto → trilha instrumental (sem vocais no jogo).
+      stream = await client.music.compose({
         prompt: entry.prompt,
-        music_length_ms: Math.round(seconds * 1000),
-        model_id: process.env.ELEVENLABS_MUSIC_MODEL || 'music_v1',
-      }, apiKey);
+        musicLengthMs: Math.min(600_000, Math.max(3_000, Math.round(seconds * 1000))),
+        forceInstrumental: true,
+        outputFormat: OUTPUT_FORMAT,
+      });
+      break;
     case 'voice': {
       const voiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
-      return requestBytes(`${API}/text-to-speech/${voiceId}`, {
+      stream = await client.textToSpeech.convert(voiceId, {
         text: entry.text,
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.6 },
-      }, apiKey);
+        modelId: 'eleven_multilingual_v2',
+        outputFormat: OUTPUT_FORMAT,
+      });
+      break;
     }
     default:
       throw new Error(`kind desconhecido: ${entry.kind}`);
   }
+  return streamToBuffer(stream);
 }
 
 // ── loop principal ──────────────────────────────────────────────────────────
@@ -128,12 +131,13 @@ async function main() {
     console.error('Falta ELEVENLABS_API_KEY (em .env.local ou no ambiente).');
     process.exit(1);
   }
+  const client = new ElevenLabsClient({ apiKey });
 
   let done = 0;
   for (const { entry, out } of planned) {
     process.stdout.write(`(${++done}/${planned.length}) [${entry.kind}] ${entry.id}… `);
     try {
-      const bytes = await generate(entry, apiKey);
+      const bytes = await generate(entry, client);
       await mkdir(dirname(out), { recursive: true });
       await writeFile(out, bytes);
       console.log(`ok (${Math.round(bytes.length / 1024)} KB)`);
