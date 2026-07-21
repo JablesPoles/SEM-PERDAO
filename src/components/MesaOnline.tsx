@@ -89,6 +89,15 @@ const ABERTURAS_RODADA = [
   'ÚLTIMA RODADA. SEM CHORO.',
 ] as const;
 
+const INTERJEICOES = [
+  'ISSO É PROVA OU PEDIDO DE SOCORRO?',
+  'EU NÃO QUERO SER ASSOCIADO A ISSO.',
+  'MERITÍSSIMO, PODE PRENDER.',
+  'O RH JÁ FOI EMBORA, NÉ?',
+  'CINEMA. ABSOLUTO CINEMA.',
+  'ESSA ATA VAI SUMIR.',
+] as const;
+
 type FaseVisual = 'jogando' | 'julgando' | 'condenado' | 'fim';
 
 const ROTULO_FASE: Record<FaseVisual, string> = {
@@ -153,6 +162,7 @@ export function MesaOnline(props: MesaOnlineProps) {
 
   // roda de reações + chat (2D, como na demo)
   const [rodaAberta, setRodaAberta] = useState(false);
+  const [arremessoPendente, setArremessoPendente] = useState<Reacao3D | null>(null);
   const [chatAberto, setChatAberto] = useState(false);
   const [chatTexto, setChatTexto] = useState('');
 
@@ -179,6 +189,16 @@ export function MesaOnline(props: MesaOnlineProps) {
   // seleção do juiz / voto (por fase)
   const [escolhaProva, setEscolhaProva] = useState<{ key: string; index: number | null }>({ key: '', index: null });
   const provaEscolhida = escolhaProva.key === selectionKey ? escolhaProva.index : null;
+
+  // carimbo 2D efêmero que flutua na tela (reação/arremesso)
+  const spawnReacaoTela = (emoji: string, rotulo: string) => {
+    const id = ++contadorReacaoRef.current;
+    const posicao = POSICOES_REACAO[(id - 1) % POSICOES_REACAO.length];
+    setReacoesTela((atuais) => [...atuais.slice(-4), { id, emoji, rotulo, ...posicao }]);
+    window.setTimeout(() => {
+      setReacoesTela((atuais) => atuais.filter((reacao) => reacao.id !== id));
+    }, 1700);
+  };
 
   // ── ciclo de vida da cena (idêntico à mesa que já funcionava) ──
   useEffect(() => {
@@ -245,20 +265,29 @@ export function MesaOnline(props: MesaOnlineProps) {
     }
   }, [props.messages]);
 
-  // reações remotas: emoji flutuando na tela de todo mundo
+  // reações remotas (inclui o eco das suas): arremessos viram objeto voando na
+  // mesa 3D (origem→alvo), emotes viram balão no réu + carimbo 2D flutuante.
   useEffect(() => {
+    const scene = sceneRef.current;
     for (const reaction of props.reactions.slice(-24)) {
       if (processedReactions.current.has(reaction.id)) continue;
       processedReactions.current.add(reaction.id);
-      const throwMatch = /^throw:(tomate|sapato|rosa):/.exec(reaction.emoji);
-      const emoji = throwMatch
-        ? (ARREMESSOS.find((a) => a.tipo === throwMatch[1])?.emoji ?? '🍅')
-        : reaction.emoji;
-      if (typeof reaction.playerId === 'number' && reaction.playerId >= 0) {
-        sceneRef.current?.reagirJogador(reaction.playerId, emoji);
+      const origem = typeof reaction.playerId === 'number' ? reaction.playerId : -1;
+      const arremesso = /^throw:(tomate|sapato|rosa):(-?\d+)$/.exec(reaction.emoji);
+      if (arremesso) {
+        const tipo = arremesso[1] as Reacao3D;
+        const alvo = Number(arremesso[2]);
+        const emoji = ARREMESSOS.find((a) => a.tipo === tipo)?.emoji ?? '🍅';
+        scene?.arremessarEntre(origem, alvo, tipo);
+        const nomeAlvo = gs.players.find((p) => p.id === alvo)?.name ?? '';
+        spawnReacaoTela(emoji, nomeAlvo ? `→ ${nomeAlvo}` : reaction.name);
+      } else {
+        if (origem >= 0) scene?.reagirJogador(origem, reaction.emoji);
+        spawnReacaoTela(reaction.emoji, reaction.name);
       }
-      spawnReacaoTela(emoji, reaction.name);
     }
+    // gs.players só pra resolver nome do alvo; não deve re-rodar o efeito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.reactions]);
 
   // ── teatro: câmera + anúncio + fala nas transições de fase ──
@@ -286,7 +315,10 @@ export function MesaOnline(props: MesaOnlineProps) {
         window.setTimeout(() => scene.falarJogador(orador.id, linha), 900);
       }
     } else if (gs.phase === 'judging') {
-      scene.setAto('provas');
+      // abre de cima ("varredura das provas") e desce pro plano das provas —
+      // o mesmo gesto de câmera da demo ao abrir o julgamento.
+      scene.setAto('cima');
+      window.setTimeout(() => sceneRef.current?.setAto('provas'), 900);
       anuncioNovo = { texto: 'ABRINDO AS PROVAS', tipo: 'normal', duracao: 700 };
     } else if (gs.phase === 'round-end') {
       scene.setAto('juiz');
@@ -306,21 +338,40 @@ export function MesaOnline(props: MesaOnlineProps) {
     if (anuncioTimerRef.current) clearTimeout(anuncioTimerRef.current);
   }, []);
 
+  // A dança de câmera da revelação: cada prova aberta corta pro plano das
+  // provas e, um beat depois, pro plano da mesa (onde entram as reações) —
+  // com uma interjeição de um réu qualquer, como na demo.
+  const revealCountRef = useRef(0);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const abertas = gs.phase === 'judging' ? gs.revealed.length : 0;
+    if (abertas <= revealCountRef.current) {
+      revealCountRef.current = abertas;
+      return;
+    }
+    revealCountRef.current = abertas;
+    scene.setAto('provas');
+    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+    revealTimerRef.current = setTimeout(() => {
+      sceneRef.current?.setAto('mesa');
+      const plateia = gs.players.filter((p) => p.id !== gs.czarId && p.connected !== false);
+      const orador = plateia[abertas % Math.max(1, plateia.length)];
+      if (orador) sceneRef.current?.falarJogador(orador.id, INTERJEICOES[(abertas - 1) % INTERJEICOES.length]);
+    }, 1400);
+  }, [gs.phase, gs.revealed.length, gs.players, gs.czarId]);
+
+  useEffect(() => () => {
+    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+  }, []);
+
   // anúncios somem sozinhos
   useEffect(() => {
     if (!anuncio) return;
     const id = window.setTimeout(() => setAnuncio(null), anuncio.duracao ?? 2400);
     return () => window.clearTimeout(id);
   }, [anuncio]);
-
-  function spawnReacaoTela(emoji: string, rotulo: string) {
-    const id = ++contadorReacaoRef.current;
-    const posicao = POSICOES_REACAO[(id - 1) % POSICOES_REACAO.length];
-    setReacoesTela((atuais) => [...atuais.slice(-4), { id, emoji, rotulo, ...posicao }]);
-    window.setTimeout(() => {
-      setReacoesTela((atuais) => atuais.filter((reacao) => reacao.id !== id));
-    }, 1700);
-  }
 
   const trocarSom = () => {
     const novoMudo = !somMudo;
@@ -344,17 +395,19 @@ export function MesaOnline(props: MesaOnlineProps) {
     setSelection({ key: selectionKey, ids: [] });
   };
 
+  // Emote e arremesso só disparam via onReact; a própria reação volta em
+  // props.reactions e a animação (balão/objeto voando) roda no efeito de
+  // reações — evita animar duas vezes.
   const reagirNaTela = (emoji: string) => {
     props.onReact(emoji);
-    spawnReacaoTela(emoji, 'VOCÊ');
     setRodaAberta(false);
+    setArremessoPendente(null);
   };
 
-  const arremessar = (tipo: Reacao3D) => {
-    props.onReact(`throw:${tipo}:-1`);
-    const emoji = ARREMESSOS.find((a) => a.tipo === tipo)?.emoji ?? '🍅';
-    spawnReacaoTela(emoji, 'VOCÊ');
+  const lancar = (tipo: Reacao3D, alvoId: number) => {
+    props.onReact(`throw:${tipo}:${alvoId}`);
     setRodaAberta(false);
+    setArremessoPendente(null);
   };
 
   const enviarChat = (evento: React.FormEvent<HTMLFormElement>) => {
@@ -672,23 +725,47 @@ export function MesaOnline(props: MesaOnlineProps) {
                 </button>
               ))}
             </div>
-            <p className="text-red/75 text-[7px] font-black tracking-[0.22em] uppercase mt-2.5 mb-1.5 border-t border-paper/10 pt-2">ARREMESSAR</p>
-            <div className="grid grid-cols-3 gap-1">
-              {ARREMESSOS.map(({ tipo, emoji, rotulo }) => (
-                <button
-                  key={tipo}
-                  onClick={() => arremessar(tipo)}
-                  className="h-11 bg-red/8 text-paper/80 border border-red/30 hover:bg-red hover:text-ink active:scale-90 font-bold text-[7px] tracking-wider transition-all flex flex-col items-center justify-center"
-                >
-                  <span className="text-base leading-none">{emoji}</span>
-                  <span className="mt-1">{rotulo}</span>
-                </button>
-              ))}
-            </div>
+            {!arremessoPendente ? (
+              <>
+                <p className="text-red/75 text-[7px] font-black tracking-[0.22em] uppercase mt-2.5 mb-1.5 border-t border-paper/10 pt-2">ARREMESSAR</p>
+                <div className="grid grid-cols-3 gap-1">
+                  {ARREMESSOS.map(({ tipo, emoji, rotulo }) => (
+                    <button
+                      key={tipo}
+                      onClick={() => setArremessoPendente(tipo)}
+                      className="h-11 bg-red/8 text-paper/80 border border-red/30 hover:bg-red hover:text-ink active:scale-90 font-bold text-[7px] tracking-wider transition-all flex flex-col items-center justify-center"
+                    >
+                      <span className="text-base leading-none">{emoji}</span>
+                      <span className="mt-1">{rotulo}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mt-2.5 mb-1.5 border-t border-paper/10 pt-2">
+                  <p className="text-red/75 text-[7px] font-black tracking-[0.22em] uppercase">
+                    {ARREMESSOS.find((a) => a.tipo === arremessoPendente)?.emoji} EM QUEM?
+                  </p>
+                  <button onClick={() => setArremessoPendente(null)} className="text-paper/45 hover:text-paper text-[9px] font-black">← voltar</button>
+                </div>
+                <div className="grid grid-cols-2 gap-1 max-h-32 overflow-y-auto">
+                  {gs.players.filter((p) => p.id !== props.myId).map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => lancar(arremessoPendente, p.id)}
+                      className="h-8 px-2 bg-paper/5 text-paper/80 border border-paper/15 hover:bg-red hover:text-ink hover:border-red active:scale-90 font-bold text-[9px] tracking-wider transition-all truncate"
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
         <button
-          onClick={() => setRodaAberta((v) => !v)}
+          onClick={() => { setRodaAberta((v) => !v); setArremessoPendente(null); }}
           aria-label="Abrir reações"
           className={`h-12 w-12 border text-xl transition-all active:scale-90 shadow-[4px_5px_0_rgba(0,0,0,.45)] ${
             rodaAberta ? 'btn-red border-transparent' : 'bg-ink/85 border-white/20 hover:bg-ink text-paper'
