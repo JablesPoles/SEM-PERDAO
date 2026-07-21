@@ -166,6 +166,8 @@ export function MesaOnline(props: MesaOnlineProps) {
   const [chatAberto, setChatAberto] = useState(false);
   const [chatTexto, setChatTexto] = useState('');
   const [placarAberto, setPlacarAberto] = useState(false);
+  // contagem do auto-avanço no fim da rodada (o botão vira "apressar")
+  const [resultRestante, setResultRestante] = useState(0);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -421,6 +423,18 @@ export function MesaOnline(props: MesaOnlineProps) {
     const id = window.setTimeout(() => setAnuncio(null), anuncio.duracao ?? 2400);
     return () => window.clearTimeout(id);
   }, [anuncio]);
+
+  // relógio do fim da rodada: alimenta a contagem no botão de próxima rodada.
+  // Só seta via interval (nunca síncrono no corpo do efeito).
+  useEffect(() => {
+    if (gs.phase !== 'round-end') return;
+    const endsAt = gs.phaseEndsAt ?? (gs.phaseStartedAt + 9000);
+    const id = window.setInterval(
+      () => setResultRestante(Math.max(0, Math.ceil((endsAt - Date.now()) / 1000))),
+      250,
+    );
+    return () => window.clearInterval(id);
+  }, [gs.phase, gs.phaseStartedAt, gs.phaseEndsAt]);
 
   const trocarSom = () => {
     const novoMudo = !somMudo;
@@ -682,7 +696,7 @@ export function MesaOnline(props: MesaOnlineProps) {
                 </span>
                 <span className="text-paper/40 text-[9px] font-mono">{gs.revealed.length}/{gs.submissions.length}</span>
               </header>
-              <div className="flex gap-2 overflow-x-auto px-4 py-3">
+              <div className="flex flex-wrap justify-center gap-2 px-4 py-3 max-h-[42vh] overflow-y-auto">
                 {gs.submissions.map((submission, index) => {
                   const aberta = democracy || gs.revealed.includes(index);
                   const selecionavel = aberta && (democracy ? escolhasVoto.includes(index) && !meuVoto : iAmJudge && todasReveladas);
@@ -1011,9 +1025,10 @@ export function MesaOnline(props: MesaOnlineProps) {
         {fase === 'condenado' && (
           <button
             onClick={props.onNextRound}
+            title="A rodada avança sozinha; clique pra apressar (todos na mesa apressando adianta na hora)."
             className="btn-red h-12 px-5 border-2 border-ink font-display text-[14px] tracking-wide shadow-[4px_5px_0_#17161a] active:translate-y-1 active:shadow-none transition-all"
           >
-            PRÓXIMA RODADA →
+            PRÓXIMA RODADA{resultRestante > 0 ? ` · ${resultRestante}s` : ''} →
           </button>
         )}
       </div>
