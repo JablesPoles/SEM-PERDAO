@@ -166,6 +166,12 @@ export function MesaOnline(props: MesaOnlineProps) {
   const [chatAberto, setChatAberto] = useState(false);
   const [chatTexto, setChatTexto] = useState('');
 
+  // Os painéis 2D de resultado esperam o teatro 3D acontecer primeiro: o
+  // martelo cair e carimbar CULPADO no veredito; o blackout, holofote e confete
+  // no encerramento. `beatPronto` guarda a fase:rodada já liberada; enquanto o
+  // beat atual não bate, o painel fica de fora e a cena aparece sozinha.
+  const [beatPronto, setBeatPronto] = useState('');
+
   // ── derivações do estado ──
   const me = gs.players.find((player) => player.id === props.myId);
   const democracy = getGameMode(gs) === 'democracy';
@@ -321,11 +327,19 @@ export function MesaOnline(props: MesaOnlineProps) {
       window.setTimeout(() => sceneRef.current?.setAto('provas'), 900);
       anuncioNovo = { texto: 'ABRINDO AS PROVAS', tipo: 'normal', duracao: 700 };
     } else if (gs.phase === 'round-end') {
+      // o martelo cai no plano do juiz; um beat depois a câmera dá um close no
+      // boneco do culpado, junto do carimbo "FULANO CULPADO".
       scene.setAto('juiz');
       const vencedor = gs.players.find((p) => p.id === gs.roundWinnerId);
-      if (vencedor) anuncioNovo = { texto: `CULPADO: ${vencedor.name}`, tipo: 'stamp', duracao: 640 };
+      if (vencedor) {
+        anuncioNovo = { texto: `CULPADO: ${vencedor.name}`, tipo: 'stamp', duracao: 640 };
+        const alvoClose = vencedor.id;
+        window.setTimeout(() => sceneRef.current?.closeUpReu(alvoClose), 700);
+      }
     } else if (gs.phase === 'game-end') {
+      // plano da mesa pro blackout + holofote no campeão; o anúncio abre a festa
       scene.setAto('mesa');
+      anuncioNovo = { texto: 'TRIBUNAL ENCERRADO', tipo: 'normal', duracao: 2000 };
     }
 
     if (anuncioNovo) {
@@ -365,6 +379,21 @@ export function MesaOnline(props: MesaOnlineProps) {
   useEffect(() => () => {
     if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
   }, []);
+
+  // Agenda a liberação do painel de resultado sem tocar em estado de forma
+  // síncrona: o setState só roda dentro do timeout. Veredito espera o martelo
+  // (~1s); encerramento espera o blackout+holofote+confete (~2.4s).
+  useEffect(() => {
+    if (gs.phase !== 'round-end' && gs.phase !== 'game-end') return;
+    const beat = `${gs.phase}:${gs.round}`;
+    // Round-end: 2,2s deixa o martelo cair E o close no culpado respirar antes
+    // do painel central cobrir a cena. Game-end: 2,4s pro blackout/confete.
+    const atraso = gs.phase === 'game-end' ? 2400 : 2200;
+    const t = window.setTimeout(() => setBeatPronto(beat), atraso);
+    return () => window.clearTimeout(t);
+  }, [gs.phase, gs.round]);
+  const vereditoPronto = beatPronto === `round-end:${gs.round}`;
+  const finalPronto = beatPronto === `game-end:${gs.round}`;
 
   // anúncios somem sozinhos
   useEffect(() => {
@@ -647,8 +676,9 @@ export function MesaOnline(props: MesaOnlineProps) {
         </>
       )}
 
-      {/* VEREDITO da rodada — prova condenatória + placar (estilo demo) */}
-      {fase === 'condenado' && (
+      {/* VEREDITO da rodada — prova condenatória + placar (estilo demo).
+          Só entra depois do martelo cair (vereditoPronto). */}
+      {fase === 'condenado' && vereditoPronto && (
         <div className="absolute inset-x-0 top-[5.2rem] bottom-[7rem] sm:bottom-16 flex items-center justify-center px-3 pointer-events-none z-10">
           <section className="w-[min(48rem,95vw)] grid sm:grid-cols-[1.45fr_0.75fr] gap-2 sm:gap-3 card-in">
             <div className="relative flex bg-[#111015]/95 border border-paper/25 p-3 sm:p-4 shadow-[8px_10px_0_rgba(0,0,0,0.48)]">
@@ -704,7 +734,7 @@ export function MesaOnline(props: MesaOnlineProps) {
 
       {/* FINAL da partida */}
       {fase === 'fim' && (
-        <Finale gs={gs} myId={props.myId} onRestart={props.onRestart} />
+        <Finale gs={gs} myId={props.myId} onRestart={props.onRestart} show={finalPronto} />
       )}
 
       {/* roda de reações (bottom-left ☠) */}
@@ -930,38 +960,54 @@ export function MesaOnline(props: MesaOnlineProps) {
 }
 
 // ── final da partida (overlay) ──
-function Finale({ gs, myId, onRestart }: { gs: TimedState; myId: number; onRestart: () => void }) {
+/**
+ * O encerramento não tapa a cena: o blackout, o holofote no campeão e o confete
+ * rodam em 3D (via syncMesa→iniciarVitoria). O 2D só entra depois (`show`), com
+ * o nome grande no alto e o ranking ancorado embaixo, deixando a festa aparecer.
+ */
+function Finale({ gs, myId, onRestart, show }: { gs: TimedState; myId: number; onRestart: () => void; show: boolean }) {
   const ranked = [...gs.players].sort((a, b) => b.score - a.score || a.id - b.id);
   const winnerIds = gs.winnerIds?.length ? gs.winnerIds : (gs.winner ? [gs.winner.id] : []);
   const winner = ranked.find((player) => winnerIds.includes(player.id)) ?? ranked[0];
   const didIWin = winnerIds.includes(myId);
   return (
-    <div className="absolute inset-0 z-40 flex flex-col items-center justify-center px-4 pointer-events-auto bg-[rgba(16,15,19,0.72)] backdrop-blur-[2px]">
-      <span className="text-red text-[10px] font-black tracking-[0.3em] uppercase mb-2">O TRIBUNAL DECIDIU</span>
-      <h1 className="font-display text-paper text-5xl sm:text-7xl text-center leading-none card-in drop-shadow-[0_6px_28px_rgba(0,0,0,0.95)]">
-        {winner?.name ?? 'NINGUÉM'}
-      </h1>
-      <p className="text-paper/70 text-[13px] font-bold mt-3 text-center">
-        {didIWin ? 'VOCÊ SOBREVIVEU AO JULGAMENTO.' : 'CULPADO DE SER A PIOR PESSOA DA MESA.'}
-      </p>
-      <div className="mt-6 w-[min(22rem,90vw)] bg-[#111015]/95 border border-paper/25 p-3 shadow-[6px_8px_0_rgba(0,0,0,0.42)]">
-        {ranked.map((player, index) => (
-          <div
-            key={player.id}
-            className={`flex items-center gap-3 py-1 ${winnerIds.includes(player.id) ? 'text-red' : 'text-paper/70'}`}
-          >
-            <i className="w-4 text-[9px] font-mono not-italic text-paper/30">{index + 1}</i>
-            <span className="flex-1 truncate text-[11px] font-black tracking-[0.1em]">{player.name}</span>
-            <strong className="font-display text-[15px]">{player.score}</strong>
-          </div>
-        ))}
+    <>
+      {/* nome do campeão no alto — não bloqueia o holofote/confete no centro */}
+      <div className="absolute top-16 sm:top-20 inset-x-0 flex flex-col items-center px-4 pointer-events-none z-40">
+        <span className="text-red text-[10px] font-black tracking-[0.3em] uppercase mb-1">O TRIBUNAL DECIDIU</span>
+        <h1 className="font-display text-paper text-5xl sm:text-7xl text-center leading-none card-in drop-shadow-[0_6px_28px_rgba(0,0,0,0.95)]">
+          {winner?.name ?? 'NINGUÉM'}
+        </h1>
+        <p className="text-paper/75 text-[13px] font-bold mt-2 text-center drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]">
+          {didIWin ? 'VOCÊ SOBREVIVEU AO JULGAMENTO.' : 'CULPADO DE SER A PIOR PESSOA DA MESA.'}
+        </p>
       </div>
-      <button
-        onClick={onRestart}
-        className="btn-red h-12 px-6 mt-6 border-2 border-ink font-display text-[14px] tracking-wide shadow-[4px_5px_0_#17161a] active:translate-y-1 active:shadow-none transition-all"
+
+      {/* ranking + sair, ancorado embaixo, entra depois do teatro 3D */}
+      <div
+        className={`absolute bottom-0 inset-x-0 flex flex-col items-center px-4 pb-6 pointer-events-auto z-40 transition-all duration-500 ${
+          show ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'
+        }`}
       >
-        SAIR DO PORÃO
-      </button>
-    </div>
+        <div className="w-[min(24rem,92vw)] bg-[#111015]/92 border border-paper/25 p-3 shadow-[6px_8px_0_rgba(0,0,0,0.42)] backdrop-blur-[2px]">
+          {ranked.map((player, index) => (
+            <div
+              key={player.id}
+              className={`flex items-center gap-3 py-1 ${winnerIds.includes(player.id) ? 'text-red' : 'text-paper/70'}`}
+            >
+              <i className="w-4 text-[9px] font-mono not-italic text-paper/30">{index + 1}</i>
+              <span className="flex-1 truncate text-[11px] font-black tracking-[0.1em]">{player.name}</span>
+              <strong className="font-display text-[15px]">{player.score}</strong>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={onRestart}
+          className="btn-red h-12 px-6 mt-3 border-2 border-ink font-display text-[14px] tracking-wide shadow-[4px_5px_0_#17161a] active:translate-y-1 active:shadow-none transition-all"
+        >
+          SAIR DO PORÃO
+        </button>
+      </div>
+    </>
   );
 }

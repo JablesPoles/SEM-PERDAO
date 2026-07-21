@@ -1576,6 +1576,41 @@ export class RetroMesa {
     return this.atoAtual;
   }
 
+  /**
+   * Close 3/4 no boneco de um réu específico — o momento "FULANO CULPADO" do
+   * veredito. Sai dos planos fixos e aponta a câmera pra cara dele, um pouco à
+   * frente (rumo ao centro) e de lado, na altura do capuz. Volta a arrastar
+   * livre; qualquer setAto seguinte reassume um plano fixo.
+   */
+  closeUpReu(id: number): boolean {
+    const reu = this.reuPorId.get(id);
+    if (!reu) return false;
+    const p = reu.group.position.clone();
+    const az = Math.atan2(p.x, p.z);
+    const paraCentro = new THREE.Vector3(-Math.sin(az), 0, -Math.cos(az));
+    const lateral = new THREE.Vector3(Math.cos(az), 0, -Math.sin(az));
+    const olho = p.clone().addScaledVector(paraCentro, 2.6).addScaledVector(lateral, 0.95);
+    olho.y = 1.85;
+    this.atoAtual = 'juiz';
+    this.camera.position.copy(olho);
+    this.controls.target.set(p.x * 0.97, 1.2, p.z * 0.97);
+    this.controls.enableZoom = true;
+    this.controls.enablePan = false;
+    this.controls.rotateSpeed = 1;
+    this.controls.minAzimuthAngle = -Infinity;
+    this.controls.maxAzimuthAngle = Infinity;
+    this.controls.minPolarAngle = 0.2;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.minDistance = 1.1;
+    this.controls.maxDistance = 9;
+    this.lampadaVisual.visible = false;
+    if (this.selfReu) this.selfReu.group.visible = true;
+    this.camera.fov = this.camera.aspect < 0.9 ? 48 : 36;
+    this.camera.updateProjectionMatrix();
+    this.controls.update();
+    return true;
+  }
+
   /** O ato do veredito: o juiz ergue o martelo e CRAVA. Screen shake, spotlight
    *  vermelho e carimbo CULPADO esmagando a prova sorteada. */
   martelada(onCulpado?: (nome: string) => void, proofId?: string) {
