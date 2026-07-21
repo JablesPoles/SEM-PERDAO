@@ -1587,27 +1587,74 @@ export class RetroMesa {
     if (!reu) return false;
     const p = reu.group.position.clone();
     const az = Math.atan2(p.x, p.z);
+    // o réu olha pro centro: pra ver o rosto, a câmera fica À FRENTE dele
+    // (rumo ao centro), com um leve desvio lateral (3/4), na altura do capuz.
     const paraCentro = new THREE.Vector3(-Math.sin(az), 0, -Math.cos(az));
     const lateral = new THREE.Vector3(Math.cos(az), 0, -Math.sin(az));
-    const olho = p.clone().addScaledVector(paraCentro, 2.6).addScaledVector(lateral, 0.95);
-    olho.y = 1.85;
+    const olho = p.clone().addScaledVector(paraCentro, 3.5).addScaledVector(lateral, 1.0);
+    olho.y = 1.66; // pouco acima do rosto, olhando levemente pra baixo
+    const alvo = new THREE.Vector3(p.x * 0.99, 1.24, p.z * 0.99);
+
     this.atoAtual = 'juiz';
-    this.camera.position.copy(olho);
-    this.controls.target.set(p.x * 0.97, 1.2, p.z * 0.97);
     this.controls.enableZoom = true;
     this.controls.enablePan = false;
     this.controls.rotateSpeed = 1;
     this.controls.minAzimuthAngle = -Infinity;
     this.controls.maxAzimuthAngle = Infinity;
-    this.controls.minPolarAngle = 0.2;
+    this.controls.minPolarAngle = 0.25;
     this.controls.maxPolarAngle = Math.PI / 2;
-    this.controls.minDistance = 1.1;
+    this.controls.minDistance = 1.6;
     this.controls.maxDistance = 9;
     this.lampadaVisual.visible = false;
     if (this.selfReu) this.selfReu.group.visible = true;
-    this.camera.fov = this.camera.aspect < 0.9 ? 48 : 36;
+    // corte seco + tremor pra dar o baque, sem câmera voando
+    this.cortarPara(olho, alvo, this.camera.aspect < 0.9 ? 46 : 40);
+    this.tremor(0.16);
+    reu.acao('apontar'); // o culpado reage ao ser apontado
+    return true;
+  }
+
+  /** Posiciona a câmera direto (corte seco) e sincroniza os OrbitControls. */
+  private cortarPara(pos: THREE.Vector3, alvo: THREE.Vector3, fov: number) {
+    this.camera.position.copy(pos);
+    this.controls.target.copy(alvo);
+    this.camera.fov = fov;
     this.camera.updateProjectionMatrix();
     this.controls.update();
+  }
+
+  /** Uma sacudida de câmera pontual (amortece sozinha no loop de shake). */
+  tremor(forca = 0.14) {
+    this.shake = Math.max(this.shake, forca);
+  }
+
+  /**
+   * Foca UMA prova específica no anel (revelação carta a carta), com corte seco
+   * e um tremor. Câmera afastada e de fora do anel, olhando pra carta deitada —
+   * legível em 3D enquanto o painel 2D mostra o texto. Como o anel embaralha por
+   * rodada, revelações seguidas pulam de posição, alternando pela mesa.
+   */
+  focarProva(index: number): boolean {
+    const bundle = [...this.proofBundles.values()][index];
+    if (!bundle || !bundle.length) return false;
+    const cp = bundle[0].group.position.clone();
+    const a = Math.atan2(cp.x, cp.z);
+    const paraFora = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
+    const olho = cp.clone().addScaledVector(paraFora, 2.3);
+    olho.y = 2.5; // afastado e mais alto: dá pra ler a carta com a mesa em volta
+    const alvo = new THREE.Vector3(cp.x, 0.12, cp.z);
+    this.atoAtual = 'provas';
+    this.controls.enableZoom = true;
+    this.controls.enablePan = false;
+    this.controls.minAzimuthAngle = -Infinity;
+    this.controls.maxAzimuthAngle = Infinity;
+    this.controls.minPolarAngle = 0.2;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.minDistance = 1.2;
+    this.controls.maxDistance = 11;
+    this.lampadaVisual.visible = false;
+    this.cortarPara(olho, alvo, this.camera.aspect < 0.9 ? 46 : 40);
+    this.tremor(0.08);
     return true;
   }
 

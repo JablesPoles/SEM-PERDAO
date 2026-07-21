@@ -165,6 +165,18 @@ export function MesaOnline(props: MesaOnlineProps) {
   const [arremessoPendente, setArremessoPendente] = useState<Reacao3D | null>(null);
   const [chatAberto, setChatAberto] = useState(false);
   const [chatTexto, setChatTexto] = useState('');
+  const [placarAberto, setPlacarAberto] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setPlacarAberto(false);
+      setChatAberto(false);
+      setRodaAberta(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Os painéis 2D de resultado esperam o teatro 3D acontecer primeiro: o
   // martelo cair e carimbar CULPADO no veredito; o blackout, holofote e confete
@@ -302,6 +314,7 @@ export function MesaOnline(props: MesaOnlineProps) {
   // que dispararia render em cascata).
   const prevBeatRef = useRef('');
   const anuncioTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const judgeIntroTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
@@ -321,10 +334,11 @@ export function MesaOnline(props: MesaOnlineProps) {
         window.setTimeout(() => scene.falarJogador(orador.id, linha), 900);
       }
     } else if (gs.phase === 'judging') {
-      // abre de cima ("varredura das provas") e desce pro plano das provas —
-      // o mesmo gesto de câmera da demo ao abrir o julgamento.
+      // abre de cima ("varredura das provas") e desce pro plano das provas.
+      // Guarda o timer: a primeira revelação cancela o sweep e assume o foco.
       scene.setAto('cima');
-      window.setTimeout(() => sceneRef.current?.setAto('provas'), 900);
+      if (judgeIntroTimerRef.current) clearTimeout(judgeIntroTimerRef.current);
+      judgeIntroTimerRef.current = setTimeout(() => sceneRef.current?.setAto('provas'), 900);
       anuncioNovo = { texto: 'ABRINDO AS PROVAS', tipo: 'normal', duracao: 700 };
     } else if (gs.phase === 'round-end') {
       // o martelo cai no plano do juiz; um beat depois a câmera dá um close no
@@ -334,7 +348,8 @@ export function MesaOnline(props: MesaOnlineProps) {
       if (vencedor) {
         anuncioNovo = { texto: `CULPADO: ${vencedor.name}`, tipo: 'stamp', duracao: 640 };
         const alvoClose = vencedor.id;
-        window.setTimeout(() => sceneRef.current?.closeUpReu(alvoClose), 700);
+        // ágil: o close arranca logo depois do martelo, não fica esperando
+        window.setTimeout(() => sceneRef.current?.closeUpReu(alvoClose), 280);
       }
     } else if (gs.phase === 'game-end') {
       // plano da mesa pro blackout + holofote no campeão; o anúncio abre a festa
@@ -366,15 +381,20 @@ export function MesaOnline(props: MesaOnlineProps) {
       return;
     }
     revealCountRef.current = abertas;
-    scene.setAto('provas');
+    // a primeira revelação cancela o sweep de abertura e assume o foco
+    if (judgeIntroTimerRef.current) { clearTimeout(judgeIntroTimerRef.current); judgeIntroTimerRef.current = null; }
+    // Foca a carta recém-revelada no anel (legível em 3D + 2D). A syncMesa já
+    // rodou antes (efeito declarado acima) e virou a carta pra cima.
+    const idx = gs.revealed[gs.revealed.length - 1];
+    scene.focarProva(idx);
+    // interjeição de um réu qualquer, sem tirar a câmera da carta
     if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
     revealTimerRef.current = setTimeout(() => {
-      sceneRef.current?.setAto('mesa');
       const plateia = gs.players.filter((p) => p.id !== gs.czarId && p.connected !== false);
       const orador = plateia[abertas % Math.max(1, plateia.length)];
       if (orador) sceneRef.current?.falarJogador(orador.id, INTERJEICOES[(abertas - 1) % INTERJEICOES.length]);
-    }, 1400);
-  }, [gs.phase, gs.revealed.length, gs.players, gs.czarId]);
+    }, 700);
+  }, [gs.phase, gs.revealed, gs.players, gs.czarId]);
 
   useEffect(() => () => {
     if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
@@ -488,8 +508,15 @@ export function MesaOnline(props: MesaOnlineProps) {
         </div>
       </div>
 
-      {/* topo direito: só o som, como a demo */}
-      <div className="absolute top-0 right-0 p-4 sm:p-6 pointer-events-auto">
+      {/* topo direito: placar (abre o zoom), som e chat */}
+      <div className="absolute top-0 right-0 p-4 sm:p-6 pointer-events-auto flex items-center gap-2">
+        <button
+          onClick={() => setPlacarAberto(true)}
+          aria-label="Ver o placar"
+          className="h-9 px-3 bg-ink/90 text-paper/80 border border-paper/20 hover:text-paper hover:border-red active:translate-y-0.5 font-black text-[9px] tracking-[0.16em] shadow-[3px_4px_0_rgba(0,0,0,.4)] transition-all"
+        >
+          ▤ PLACAR
+        </button>
         <button
           onClick={trocarSom}
           aria-label={somMudo ? 'Ativar som' : 'Silenciar som'}
@@ -497,7 +524,58 @@ export function MesaOnline(props: MesaOnlineProps) {
         >
           {somMudo ? 'SOM OFF' : '♪ SOM'}
         </button>
+        <button
+          onClick={() => setChatAberto((aberto) => !aberto)}
+          aria-expanded={chatAberto}
+          className={`relative h-9 px-3 border font-black text-[9px] tracking-[0.16em] shadow-[3px_4px_0_rgba(0,0,0,.4)] transition-all ${chatAberto ? 'bg-red text-ink border-red' : 'bg-ink/90 text-paper/80 border-paper/20 hover:border-paper/45'}`}
+        >
+          ▰ CHAT
+          <span className="ml-1 font-mono text-[8px] opacity-70">{Math.min(props.messages.length, 99)}</span>
+        </button>
       </div>
+
+      {/* placar em zoom: modal legível, fecha no ESC ou clique fora */}
+      {placarAberto && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center p-5 bg-[rgba(16,15,19,0.82)] backdrop-blur-[2px] pointer-events-auto"
+          onClick={() => setPlacarAberto(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Placar"
+        >
+          <div
+            className="w-[min(26rem,94vw)] bg-[#111015] border border-paper/25 shadow-[8px_10px_0_rgba(0,0,0,0.5)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-paper/15">
+              <span className="font-display text-paper text-lg tracking-wide">PLACAR DO PORÃO</span>
+              <span className="text-red text-[9px] font-black tracking-[0.16em] uppercase">até {scoreLimit}</span>
+            </div>
+            <ol className="p-3 flex flex-col gap-1">
+              {placarOrdenado.map((player, index) => {
+                const juiz = !democracy && player.id === gs.czarId;
+                return (
+                  <li
+                    key={player.id}
+                    className={`flex items-center gap-3 px-2 py-2 ${player.id === props.myId ? 'bg-white/[0.05]' : ''}`}
+                  >
+                    <span className="w-5 font-mono text-[11px] text-paper/35">{index + 1}</span>
+                    <span className="flex-1 truncate font-black text-[13px] tracking-[0.06em] text-paper/90">
+                      {player.name}
+                      {player.id === props.myId && <span className="text-red"> · você</span>}
+                      {juiz && <span className="text-paper/40 text-[10px]"> ⚖ juiz</span>}
+                    </span>
+                    <span className="font-display text-2xl text-paper">{player.score}</span>
+                  </li>
+                );
+              })}
+            </ol>
+            <p className="px-4 py-2 border-t border-paper/10 text-[9px] text-paper/35 tracking-[0.14em] uppercase text-center">
+              clique fora ou ESC pra fechar
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* A pergunta: processo físico legível (submitting + julgando) */}
       {(fase === 'jogando' || fase === 'julgando') && pretaTexto && (
@@ -805,10 +883,10 @@ export function MesaOnline(props: MesaOnlineProps) {
         </button>
       </div>
 
-      {/* chat da audiência (bottom-right) */}
-      <div className="absolute bottom-[13.5rem] sm:bottom-[4.8rem] right-0 p-3 sm:p-6 pointer-events-auto z-20">
-        {chatAberto && (
-          <section className="w-[min(18rem,calc(100vw-1.5rem))] mb-2 bg-[#111015]/95 border border-paper/25 shadow-[6px_8px_0_rgba(0,0,0,.5)]">
+      {/* painel do chat: desce do botão CHAT no topo direito */}
+      {chatAberto && (
+        <div className="absolute top-16 sm:top-20 right-4 sm:right-6 z-40 pointer-events-auto">
+          <section className="w-[min(18rem,calc(100vw-1.5rem))] bg-[#111015]/95 border border-paper/25 shadow-[6px_8px_0_rgba(0,0,0,.5)]">
             <header className="flex items-center justify-between gap-3 px-3 py-2 border-b border-paper/15">
               <div>
                 <p className="font-display text-paper text-[10px] tracking-[0.12em]">CHAT DA AUDIÊNCIA</p>
@@ -856,18 +934,8 @@ export function MesaOnline(props: MesaOnlineProps) {
               </button>
             </form>
           </section>
-        )}
-        <button
-          type="button"
-          onClick={() => setChatAberto((aberto) => !aberto)}
-          aria-expanded={chatAberto}
-          className={`ml-auto flex h-10 items-center gap-2 border px-3 font-black text-[8px] tracking-[0.16em] shadow-[4px_5px_0_rgba(0,0,0,.45)] transition-colors ${chatAberto ? 'bg-red text-ink border-red' : 'bg-ink/90 text-paper border-paper/20 hover:border-paper/45'}`}
-        >
-          <span className="text-sm leading-none">▰</span>
-          CHAT
-          <span className="bg-paper/10 px-1 py-0.5 font-mono text-[7px]">{Math.min(props.messages.length, 99)}</span>
-        </button>
-      </div>
+        </div>
+      )}
 
       {/* A SUA MÃO — cartas legíveis (submitting, se você não é juiz e ainda não jogou) */}
       {fase === 'jogando' && me && !iAmJudge && !submitted && (
@@ -921,8 +989,8 @@ export function MesaOnline(props: MesaOnlineProps) {
         </div>
       )}
 
-      {/* ação principal (bottom-right) */}
-      <div className="absolute bottom-40 sm:bottom-0 right-0 p-3 sm:p-6 pointer-events-auto z-10" style={{ marginBottom: '3.5rem' }}>
+      {/* ação principal (bottom-right) — canto livre agora que o chat subiu */}
+      <div className="absolute bottom-40 sm:bottom-0 right-0 p-3 sm:p-6 pointer-events-auto z-10">
         {fase === 'jogando' && me && !iAmJudge && !submitted && (
           <button
             onClick={enviarDepoimento}
