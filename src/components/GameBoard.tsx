@@ -13,6 +13,7 @@ import {
   votingChoicesFor,
 } from '../lib/game';
 import { isMuted, playSound, setMuted } from '../lib/sounds';
+import { QUICK_REACTIONS, REACTION_CATALOG } from '../lib/mesa/reactionCatalog';
 import { avatarColor, initials } from './avatar';
 
 interface GameBoardProps {
@@ -268,28 +269,6 @@ function SubmitStatus({ gs }: { gs: GameState }) {
   );
 }
 
-const REACTION_EMOJIS = [
-  { emoji: '💀', label: 'Morri' },
-  { emoji: '🤣', label: 'Rindo muito' },
-  { emoji: '🤡', label: 'Palhaço' },
-  { emoji: '🗿', label: 'Chad de pedra' },
-  { emoji: '🤮', label: 'Que nojo' },
-  { emoji: '👀', label: 'De olho' },
-  { emoji: '🫠', label: 'Derretendo' },
-  { emoji: '🤨', label: 'Suspeito' },
-  { emoji: '💅', label: 'Serviu' },
-  { emoji: '🍿', label: 'Só assistindo' },
-  { emoji: '🚩', label: 'Red flag' },
-  { emoji: '🔥', label: 'Pegou fogo' },
-  { emoji: '😭', label: 'Chorando' },
-  { emoji: '🤌', label: 'Cinema' },
-  { emoji: '🧢', label: 'É mentira' },
-  { emoji: '🫡', label: 'Foi de base' },
-  { emoji: '👏', label: 'Palmas' },
-  { emoji: '🫣', label: 'Nem vi' },
-] as const;
-
-const QUICK_REACTIONS = REACTION_EMOJIS.slice(0, 6);
 const REACTION_LIFETIME_MS = 2800;
 const MESSAGE_LIFETIME_MS = 5200;
 
@@ -452,7 +431,7 @@ function ReactionBar({ onReact }: { onReact: (emoji: string) => void }) {
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex gap-0.5 bg-[#100f13]/90 border border-white/10 rounded-full px-1.5 py-1 backdrop-blur-md shadow-xl">
       {expanded && (
         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 grid grid-cols-4 sm:grid-cols-6 gap-1 rounded-2xl border border-white/12 bg-[#100f13]/95 p-2 shadow-2xl backdrop-blur-md">
-          {REACTION_EMOJIS.map(({ emoji, label }) => (
+          {REACTION_CATALOG.map(({ emoji, label }) => (
             <button
               key={emoji}
               type="button"

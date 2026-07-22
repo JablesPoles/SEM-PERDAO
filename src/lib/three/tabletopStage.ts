@@ -4,10 +4,32 @@ import {
   type FrameBenchmarkResult,
   type FrameBenchmarkState,
 } from './frameBenchmark';
-import { summarizeProjectedFrame, type FramingReport } from './framing';
+import {
+  summarizeProjectedFrame,
+  summarizeVisibleMeshFrame,
+  type FramingReport,
+} from './framing';
 
 export type StageQuality = 'cinematic' | 'balanced' | 'performance';
-export type StageViewportMode = 'landscape' | 'portrait';
+export type StageViewportMode = 'landscape' | 'portrait' | 'compact-landscape';
+
+const PORTRAIT_MAX_ASPECT = 0.82;
+const COMPACT_LANDSCAPE_MAX_HEIGHT = 480;
+const COMPACT_LANDSCAPE_MIN_ASPECT = 1.35;
+
+export function classifyStageViewport(width: number, height: number): StageViewportMode {
+  const safeWidth = Number.isFinite(width) ? Math.max(1, width) : 1;
+  const safeHeight = Number.isFinite(height) ? Math.max(1, height) : 1;
+  const aspect = safeWidth / safeHeight;
+  if (aspect < PORTRAIT_MAX_ASPECT) return 'portrait';
+  if (
+    safeHeight <= COMPACT_LANDSCAPE_MAX_HEIGHT
+    && aspect >= COMPACT_LANDSCAPE_MIN_ASPECT
+  ) {
+    return 'compact-landscape';
+  }
+  return 'landscape';
+}
 
 export interface StageQualityProfile {
   label: string;
@@ -87,26 +109,52 @@ const CRT_FRAGMENT = /* glsl */ `
   }
 `;
 
+export interface CameraVariantDefinition {
+  position?: readonly [number, number, number];
+  target?: readonly [number, number, number];
+  fov?: number;
+}
+
 export interface CameraDefinition {
   position: readonly [number, number, number];
   target: readonly [number, number, number];
   fov?: number;
-  portrait?: {
-    position?: readonly [number, number, number];
-    target?: readonly [number, number, number];
-    fov?: number;
+  portrait?: CameraVariantDefinition;
+  compactLandscape?: CameraVariantDefinition;
+}
+
+export interface ResolvedCameraDefinition {
+  position: readonly [number, number, number];
+  target: readonly [number, number, number];
+  fov: number;
+}
+
+export function resolveCameraDefinition(
+  definition: CameraDefinition,
+  viewportMode: StageViewportMode
+): ResolvedCameraDefinition {
+  const variant = viewportMode === 'portrait'
+    ? definition.portrait
+    : viewportMode === 'compact-landscape'
+      ? definition.compactLandscape
+      : undefined;
+  return {
+    position: variant?.position ?? definition.position,
+    target: variant?.target ?? definition.target,
+    fov: variant?.fov ?? definition.fov ?? 48,
   };
 }
 
-interface ResolvedCameraDefinition {
+interface RuntimeCameraDefinition {
   position: THREE.Vector3;
   target: THREE.Vector3;
   fov: number;
 }
 
 interface CameraAct {
-  landscape: ResolvedCameraDefinition;
-  portrait: ResolvedCameraDefinition | null;
+  landscape: RuntimeCameraDefinition;
+  portrait: RuntimeCameraDefinition;
+  compactLandscape: RuntimeCameraDefinition;
 }
 
 interface CameraTween {
@@ -131,6 +179,9 @@ export interface StageMetrics extends Record<string, unknown> {
   pixelScale: number;
   drawCalls: number;
   triangles: number;
+  geometries: number;
+  textures: number;
+  shaderPrograms: number | null;
   activeLights: number;
   meshCount: number;
   materialCount: number;
@@ -427,25 +478,29 @@ export class TabletopStage {
   }
 
   defineCameraAct(name: string, definition: CameraDefinition): void {
-    const landscape: ResolvedCameraDefinition = {
-      position: new THREE.Vector3(...definition.position),
-      target: new THREE.Vector3(...definition.target),
-      fov: definition.fov ?? 48,
+    const resolve = (mode: StageViewportMode): RuntimeCameraDefinition => {
+      const camera = resolveCameraDefinition(definition, mode);
+      return {
+        position: new THREE.Vector3(...camera.position),
+        target: new THREE.Vector3(...camera.target),
+        fov: camera.fov,
+      };
     };
-    const portrait = definition.portrait ? {
-      position: new THREE.Vector3(...(definition.portrait.position ?? definition.position)),
-      target: new THREE.Vector3(...(definition.portrait.target ?? definition.target)),
-      fov: definition.portrait.fov ?? definition.fov ?? 48,
-    } : null;
-    this.cameraActs.set(name, { landscape, portrait });
+    this.cameraActs.set(name, {
+      landscape: resolve('landscape'),
+      portrait: resolve('portrait'),
+      compactLandscape: resolve('compact-landscape'),
+    });
   }
 
   setCameraAct(name: string, { immediate = false, duration = 720 } = {}): void {
     const definition = this.cameraActs.get(name);
     if (!definition) throw new Error(`Ato de câmera desconhecido: ${name}`);
-    const act = this.viewportMode === 'portrait' && definition.portrait
+    const act = this.viewportMode === 'portrait'
       ? definition.portrait
-      : definition.landscape;
+      : this.viewportMode === 'compact-landscape'
+        ? definition.compactLandscape
+        : definition.landscape;
     this.activeCameraAct = name;
     if (immediate || this.reducedMotion) {
       this.camera.position.copy(act.position);
@@ -485,7 +540,7 @@ export class TabletopStage {
     if (this.disposed) return;
     const width = Math.max(1, this.canvas.clientWidth || window.innerWidth);
     const height = Math.max(1, this.canvas.clientHeight || window.innerHeight);
-    const nextMode: StageViewportMode = width / height < 0.82 ? 'portrait' : 'landscape';
+    const nextMode = classifyStageViewport(width, height);
     const modeChanged = nextMode !== this.viewportMode;
     this.viewportMode = nextMode;
     const devicePixelRatio = Math.min(window.devicePixelRatio || 1, 2);
@@ -542,6 +597,9 @@ export class TabletopStage {
       pixelScale: this.pixelScale,
       drawCalls: this.renderer.info.render.calls,
       triangles: this.renderer.info.render.triangles,
+      geometries: this.renderer.info.memory.geometries,
+      textures: this.renderer.info.memory.textures,
+      shaderPrograms: this.renderer.info.programs?.length ?? null,
       activeLights,
       meshCount,
       materialCount: materials.size,
@@ -569,19 +627,7 @@ export class TabletopStage {
   }
 
   framingReport(object: THREE.Object3D = this.root, padding = 0.04): FramingReport | null {
-    const box = new THREE.Box3().setFromObject(object);
-    if (box.isEmpty()) return null;
-    const { min, max } = box;
-    return this.framingReportForPoints([
-      new THREE.Vector3(min.x, min.y, min.z),
-      new THREE.Vector3(min.x, min.y, max.z),
-      new THREE.Vector3(min.x, max.y, min.z),
-      new THREE.Vector3(min.x, max.y, max.z),
-      new THREE.Vector3(max.x, min.y, min.z),
-      new THREE.Vector3(max.x, min.y, max.z),
-      new THREE.Vector3(max.x, max.y, min.z),
-      new THREE.Vector3(max.x, max.y, max.z),
-    ], padding);
+    return summarizeVisibleMeshFrame(object, this.camera, padding);
   }
 
   private updateCameraTween(now: number): void {

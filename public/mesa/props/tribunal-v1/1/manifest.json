@@ -1,0 +1,19 @@
+{
+  "schema": "a-mesa.props/v1",
+  "id": "sem-perdao.tribunal-props-v1",
+  "label": "Props do Tribunal do Porão",
+  "version": 1,
+  "source": { "uri": "./props.glb", "authoring": "tools/blender/props.py" },
+  "coordinateSystem": { "metersPerUnit": 1, "forward": "+z", "up": "+y" },
+  "props": {
+    "gavel": "PropGavel",
+    "gavel-block": "PropGavelBlock",
+    "lamp": "PropLamp",
+    "chair": "PropChair",
+    "throne": "PropThrone",
+    "tomato": "PropTomato",
+    "shoe": "PropShoe",
+    "rose": "PropRose"
+  },
+  "budget": { "maxDownloadBytes": 300000, "maxTriangles": 3000, "maxDrawCalls": 24 }
+}

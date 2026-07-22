@@ -7,6 +7,7 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ALL_BLACK, ALL_WHITE } from '@/lib/cards';
+import { REACTION_CATALOG, REACTION_THROWS } from '@/lib/mesa/reactionCatalog';
 import { isMuted, setMuted } from '@/lib/sounds';
 import { type Ato, type Reacao3D, type RetroMesa } from '@/lib/three/retroMesa';
 
@@ -15,32 +16,11 @@ const TAMANHO_MAO = 8;
 const RESPOSTAS_NPC = 6;
 const PRETAS_DEMO = ALL_BLACK.filter((carta) => carta.pick === 1);
 
-const ARREMESSOS: { tipo: Reacao3D; emoji: string; rotulo: string }[] = [
-  { tipo: 'tomate', emoji: '🍅', rotulo: 'TOMATE' },
-  { tipo: 'sapato', emoji: '👞', rotulo: 'SAPATO' },
-  { tipo: 'rosa', emoji: '🌹', rotulo: 'ROSA' },
-];
+const ARREMESSOS: { tipo: Reacao3D; emoji: string; rotulo: string }[] = REACTION_THROWS.map(
+  ({ kind, emoji, label }) => ({ tipo: kind, emoji, rotulo: label })
+);
 
-const EMOTES_TELA = [
-  { emoji: '💀', rotulo: 'MORRI' },
-  { emoji: '🤣', rotulo: 'RINDO MUITO' },
-  { emoji: '🤡', rotulo: 'PALHAÇO' },
-  { emoji: '🗿', rotulo: 'CHAD DE PEDRA' },
-  { emoji: '🤮', rotulo: 'QUE NOJO' },
-  { emoji: '👀', rotulo: 'DE OLHO' },
-  { emoji: '😵', rotulo: 'DERRETENDO' },
-  { emoji: '🤨', rotulo: 'SUSPEITO' },
-  { emoji: '💅', rotulo: 'SERVIU' },
-  { emoji: '🍿', rotulo: 'SÓ ASSISTINDO' },
-  { emoji: '🚩', rotulo: 'RED FLAG' },
-  { emoji: '🔥', rotulo: 'PEGOU FOGO' },
-  { emoji: '😭', rotulo: 'CHORANDO' },
-  { emoji: '🎬', rotulo: 'CINEMA' },
-  { emoji: '🧢', rotulo: 'É MENTIRA' },
-  { emoji: '⚰️', rotulo: 'FOI DE BASE' },
-  { emoji: '👏', rotulo: 'PALMAS' },
-  { emoji: '🙈', rotulo: 'NEM VI' },
-] as const;
+const EMOTES_TELA = REACTION_CATALOG.map(({ emoji, stamp: rotulo }) => ({ emoji, rotulo }));
 
 const POSICOES_REACAO = [
   { esquerda: 26, topo: 31, giro: -7 },

@@ -24,13 +24,23 @@ import {
   getAudioChannelVolume,
   isAudioChannelEnabled,
   isMuted,
+  playGavel,
+  playSound,
   setAudioChannelEnabled,
   setAudioChannelVolume,
   setMuted,
   type AudioChannel,
 } from '@/lib/sounds';
 import { setMusicScene, startAmbience, stopAllMusic } from '@/lib/music';
-import { narrate, preloadNarration, type NarrationEvent } from '@/lib/narrator';
+import { narrate, preloadNarration } from '@/lib/narrator';
+import {
+  createSemPerdaoExperienceExecutors,
+  semPerdaoFinaleTiming,
+  SemPerdaoExperienceSession,
+  type SemPerdaoCameraAct,
+} from '@/lib/mesa/semPerdaoExperience';
+import { REACTION_CATALOG, REACTION_THROWS } from '@/lib/mesa/reactionCatalog';
+import { ReactionComboTracker } from '@/lib/mesa/reactionCombos';
 import type { Ato, Qualidade3D, Reacao3D, RetroMesa } from '@/lib/three/retroMesa';
 import type { BlackCard, ChatMessage, GameState, Reaction, WhiteCard } from '@/lib/types';
 import {
@@ -52,6 +62,7 @@ import {
 interface MesaOnlineProps {
   state: GameState;
   myId: number;
+  roomSessionId: string;
   onSubmit: (cardIds: string[]) => void;
   onReveal: (index: number) => void;
   onJudge: (index: number) => void;
@@ -72,32 +83,11 @@ type TimedState = GameState & {
 
 // ── constantes do HUD da demo (copiadas de /3d, sem alterar) ────────────────
 
-const EMOTES_TELA = [
-  { emoji: '💀', rotulo: 'MORRI' },
-  { emoji: '🤣', rotulo: 'RINDO MUITO' },
-  { emoji: '🤡', rotulo: 'PALHAÇO' },
-  { emoji: '🗿', rotulo: 'CHAD DE PEDRA' },
-  { emoji: '🤮', rotulo: 'QUE NOJO' },
-  { emoji: '👀', rotulo: 'DE OLHO' },
-  { emoji: '😵', rotulo: 'DERRETENDO' },
-  { emoji: '🤨', rotulo: 'SUSPEITO' },
-  { emoji: '💅', rotulo: 'SERVIU' },
-  { emoji: '🍿', rotulo: 'SÓ ASSISTINDO' },
-  { emoji: '🚩', rotulo: 'RED FLAG' },
-  { emoji: '🔥', rotulo: 'PEGOU FOGO' },
-  { emoji: '😭', rotulo: 'CHORANDO' },
-  { emoji: '🎬', rotulo: 'CINEMA' },
-  { emoji: '🧢', rotulo: 'É MENTIRA' },
-  { emoji: '⚰️', rotulo: 'FOI DE BASE' },
-  { emoji: '👏', rotulo: 'PALMAS' },
-  { emoji: '🙈', rotulo: 'NEM VI' },
-] as const;
+const EMOTES_TELA = REACTION_CATALOG.map(({ emoji, stamp: rotulo }) => ({ emoji, rotulo }));
 
-const ARREMESSOS: { tipo: Reacao3D; emoji: string; rotulo: string }[] = [
-  { tipo: 'tomate', emoji: '🍅', rotulo: 'TOMATE' },
-  { tipo: 'sapato', emoji: '👞', rotulo: 'SAPATO' },
-  { tipo: 'rosa', emoji: '🌹', rotulo: 'ROSA' },
-];
+const ARREMESSOS: { tipo: Reacao3D; emoji: string; rotulo: string }[] = REACTION_THROWS.map(
+  ({ kind, emoji, label }) => ({ tipo: kind, emoji, rotulo: label })
+);
 
 const AUDIO_LABEL: Record<AudioChannel, { label: string; icon: string }> = {
   effects: { label: 'EFEITOS', icon: '✦' },
@@ -111,23 +101,6 @@ const POSICOES_REACAO = [
   { esquerda: 44, topo: 46, giro: -3 },
   { esquerda: 70, topo: 51, giro: 8 },
   { esquerda: 31, topo: 55, giro: 4 },
-] as const;
-
-const ABERTURAS_RODADA = [
-  'QUEM ESCREVEU ESSA PERGUNTA?',
-  'EU JÁ QUERO TROCAR DE ADVOGADO.',
-  'NINGUÉM ASSINA ESSA ATA.',
-  'O PORÃO FICOU MAIS FRIO.',
-  'ÚLTIMA RODADA. SEM CHORO.',
-] as const;
-
-const INTERJEICOES = [
-  'ISSO É PROVA OU PEDIDO DE SOCORRO?',
-  'EU NÃO QUERO SER ASSOCIADO A ISSO.',
-  'MERITÍSSIMO, PODE PRENDER.',
-  'O RH JÁ FOI EMBORA, NÉ?',
-  'CINEMA. ABSOLUTO CINEMA.',
-  'ESSA ATA VAI SUMIR.',
 ] as const;
 
 type FaseVisual = 'jogando' | 'julgando' | 'condenado' | 'fim';
@@ -176,14 +149,23 @@ interface ReacaoTela {
   giro: number;
 }
 
+function playerIdFromActor(actorId: string): number | null {
+  const match = /^player:(-?\d+)$/u.exec(actorId);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 export function MesaOnline(props: MesaOnlineProps) {
   const gs = props.state as TimedState;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sceneRef = useRef<RetroMesa | null>(null);
+  const experienceRef = useRef<SemPerdaoExperienceSession | null>(null);
   const view = useMemo(() => projectMesaView(gs, props.myId), [gs, props.myId]);
   const viewRef = useRef(view);
   const processedMessages = useRef(new Set<string>());
   const processedReactions = useRef(new Set<string>());
+  const reactionCombos = useRef(new ReactionComboTracker());
   const contadorReacaoRef = useRef(0);
   const [viewMode, setViewMode] = useState<TableViewMode>('3d');
   const [qualityPreference, setQualityPreference] = useState<QualityPreference>('auto');
@@ -357,6 +339,77 @@ export function MesaOnline(props: MesaOnlineProps) {
               : 'pov';
         scene.setAto(initialAto);
         sceneRef.current = scene;
+        const cameraActs: Record<SemPerdaoCameraAct, Ato> = {
+          table: 'mesa',
+          pov: 'pov',
+          proofs: 'provas',
+          judge: 'juiz',
+          overhead: 'cima',
+        };
+        const experience = new SemPerdaoExperienceSession(
+          props.roomSessionId,
+          createSemPerdaoExperienceExecutors({
+            camera: {
+              setAct: (act) => scene.setAto(cameraActs[act]),
+              focusProof: (index) => { scene.focarProva(index); },
+              closeActor: (actorId) => {
+                const playerId = playerIdFromActor(actorId);
+                if (playerId !== null) scene.closeUpReu(playerId);
+              },
+              finalWide: (actorId) => {
+                const playerId = playerIdFromActor(actorId);
+                if (playerId !== null) scene.planoFinal(playerId);
+              },
+            },
+            actor: {
+              play: (actorId, command) => {
+                const playerId = playerIdFromActor(actorId);
+                if (playerId !== null) scene.playActorIntent(playerId, command);
+              },
+              speak: (actorId, line) => {
+                const playerId = playerIdFromActor(actorId);
+                if (playerId !== null) scene.falarJogador(playerId, line);
+              },
+            },
+            vfx: {
+              verdict: (proofId) => scene.martelada(undefined, proofId ?? undefined),
+              pulse: (intensity) => scene.tremor(intensity),
+            },
+            audio: {
+              music: setMusicScene,
+              narrate,
+              // A rajada do juiz é decisão de direção do Sem Perdão, não da
+              // engine: ela só pede `gavel`.
+              sound: (cue) => (cue === 'gavel' ? playGavel() : playSound(cue)),
+            },
+            hud: {
+              cue: (cue, actorId, payload) => {
+                const playerId = actorId ? playerIdFromActor(actorId) : null;
+                const actorName = playerId === null
+                  ? null
+                  : viewRef.current.seats.find((seat) => seat.id === playerId)?.name ?? null;
+                const next = cue === 'announce.round'
+                  ? { texto: `RODADA ${Number(payload.round) || viewRef.current.round}`, tipo: 'normal' as const, duracao: 900 }
+                  : cue === 'announce.judgment'
+                    ? { texto: 'ABRINDO AS PROVAS', tipo: 'normal' as const, duracao: 700 }
+                    : cue === 'announce.runoff'
+                      ? { texto: 'EMPATE — SEGUNDO TURNO', tipo: 'stamp' as const, duracao: 1_200 }
+                      : cue === 'announce.winner'
+                        ? { texto: `CULPADO: ${actorName ?? 'ALGUÉM'}`, tipo: 'stamp' as const, duracao: 640 }
+                        : cue === 'announce.draw'
+                          ? { texto: 'SEM VEREDITO', tipo: 'stamp' as const, duracao: 900 }
+                          : cue === 'announce.game-draw'
+                            ? { texto: 'TRIBUNAL SEM VENCEDOR', tipo: 'normal' as const, duracao: 2_000 }
+                            : cue === 'announce.game'
+                              ? { texto: 'TRIBUNAL ENCERRADO', tipo: 'normal' as const, duracao: 2_000 }
+                              : null;
+                if (next) setAnuncio(next);
+              },
+            },
+          })
+        );
+        experienceRef.current = experience;
+        experience.accept(viewRef.current);
         canvas.dataset.quality = profile.quality;
         const readyDetail = {
           metrics: scene.performanceMetrics(),
@@ -386,6 +439,8 @@ export function MesaOnline(props: MesaOnlineProps) {
       disposed = true;
       cancelAnimationFrame(muteFrame);
       stopAllMusic();
+      experienceRef.current?.dispose();
+      experienceRef.current = null;
       sceneRef.current?.dispose();
       sceneRef.current = null;
       setPronto(false);
@@ -413,7 +468,9 @@ export function MesaOnline(props: MesaOnlineProps) {
   // reconcilia a cena a cada mudança de estado
   useEffect(() => {
     viewRef.current = view;
-    sceneRef.current?.syncMesa(view);
+    if (!sceneRef.current) return;
+    sceneRef.current.syncMesa(view);
+    experienceRef.current?.accept(view);
   }, [view]);
 
   // falas remotas viram balão no palco 3D (pula narração do sistema)
@@ -448,125 +505,58 @@ export function MesaOnline(props: MesaOnlineProps) {
         if (origem >= 0) scene?.reagirJogador(origem, reaction.emoji);
         spawnReacaoTela(reaction.emoji, reaction.name);
       }
+
+      const combo = reactionCombos.current.push({
+        id: reaction.id,
+        emoji: reaction.emoji,
+        participantId: reaction.playerId ?? reaction.name,
+        timestamp: reaction.ts,
+      });
+      if (!combo) continue;
+
+      const motim = combo.kind === 'riot';
+      scene?.tremor(motim ? 0.28 : 0.16);
+      if (origem >= 0) {
+        scene?.playActorIntent(origem, {
+          intent: motim ? 'rage' : 'celebrate',
+          priority: 70,
+          intensity: Math.min(1.5, combo.participants / 3),
+          seed: reaction.ts,
+          sourceEventId: combo.id,
+        });
+      }
+      playSound(motim ? 'stamp' : 'roundWin');
+      setAnuncio({
+        texto: motim
+          ? `MOTIM NA MESA ×${combo.count}`
+          : `${combo.emoji} CORO ×${combo.participants}`,
+        tipo: 'stamp',
+        duracao: 1_400,
+      });
     }
     // gs.players só pra resolver nome do alvo; não deve re-rodar o efeito.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.reactions]);
 
-  // ── teatro: câmera + anúncio + fala nas transições de fase ──
-  // Câmera e falas são efeitos colaterais em sistemas externos (a cena Three);
-  // o anúncio é estado React, então é agendado (não setado no corpo do effect,
-  // que dispararia render em cascata).
-  const prevBeatRef = useRef('');
-  const anuncioTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const judgeIntroTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    const scene = sceneRef.current;
-    if (!scene) return;
-    const beat = `${gs.round}:${gs.phase}`;
-    if (beat === prevBeatRef.current) return;
-    const primeiraVez = prevBeatRef.current === '';
-    prevBeatRef.current = beat;
-
-    // trilha + narração acompanham a fase (no-op silencioso se sem áudio)
-    let cena: NarrationEvent | null = null;
-    let anuncioNovo: { texto: string; tipo: 'normal' | 'stamp'; duracao?: number } | null = null;
-    if (gs.phase === 'submitting') {
-      scene.setAto('pov');
-      setMusicScene('lobby');
-      if (!primeiraVez) { anuncioNovo = { texto: `RODADA ${gs.round}`, tipo: 'normal', duracao: 900 }; cena = 'round-open'; }
-      const plateia = gs.players.filter((p) => p.id !== props.myId && p.id !== gs.czarId && p.connected !== false);
-      const orador = plateia[gs.round % Math.max(1, plateia.length)];
-      if (orador) {
-        const linha = ABERTURAS_RODADA[(gs.round - 1) % ABERTURAS_RODADA.length];
-        window.setTimeout(() => scene.falarJogador(orador.id, linha), 900);
-      }
-    } else if (gs.phase === 'judging') {
-      // abre de cima ("varredura das provas") e desce pro plano das provas.
-      // Guarda o timer: a primeira revelação cancela o sweep e assume o foco.
-      scene.setAto('cima');
-      setMusicScene('tension');
-      cena = 'judging';
-      if (judgeIntroTimerRef.current) clearTimeout(judgeIntroTimerRef.current);
-      judgeIntroTimerRef.current = setTimeout(() => sceneRef.current?.setAto('provas'), 900);
-      anuncioNovo = { texto: 'ABRINDO AS PROVAS', tipo: 'normal', duracao: 700 };
-    } else if (gs.phase === 'round-end') {
-      // o martelo cai no plano do juiz; um beat depois a câmera dá um close no
-      // boneco do culpado, junto do carimbo "FULANO CULPADO".
-      scene.setAto('juiz');
-      const vencedor = gs.players.find((p) => p.id === gs.roundWinnerId);
-      if (vencedor) {
-        anuncioNovo = { texto: `CULPADO: ${vencedor.name}`, tipo: 'stamp', duracao: 640 };
-        cena = 'guilty';
-        const alvoClose = vencedor.id;
-        // ágil: o close arranca logo depois do martelo, não fica esperando
-        window.setTimeout(() => sceneRef.current?.closeUpReu(alvoClose), 280);
-      }
-    } else if (gs.phase === 'game-end') {
-      // plano da mesa pro blackout + holofote no campeão; o anúncio abre a festa
-      scene.setAto('mesa');
-      setMusicScene('finale');
-      cena = 'finale';
-      anuncioNovo = { texto: 'TRIBUNAL ENCERRADO', tipo: 'normal', duracao: 2000 };
-    }
-
-    if (cena) narrate(cena);
-
-    if (anuncioNovo) {
-      if (anuncioTimerRef.current) clearTimeout(anuncioTimerRef.current);
-      anuncioTimerRef.current = setTimeout(() => setAnuncio(anuncioNovo), 0);
-    }
-  }, [gs.round, gs.phase, gs.czarId, gs.roundWinnerId, gs.players, props.myId]);
-
-  useEffect(() => () => {
-    if (anuncioTimerRef.current) clearTimeout(anuncioTimerRef.current);
-  }, []);
-
-  // A dança de câmera da revelação: cada prova aberta corta pro plano das
-  // provas e, um beat depois, pro plano da mesa (onde entram as reações) —
-  // com uma interjeição de um réu qualquer, como na demo.
-  const revealCountRef = useRef(0);
-  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    const scene = sceneRef.current;
-    if (!scene) return;
-    const abertas = gs.phase === 'judging' ? gs.revealed.length : 0;
-    if (abertas <= revealCountRef.current) {
-      revealCountRef.current = abertas;
-      return;
-    }
-    revealCountRef.current = abertas;
-    // a primeira revelação cancela o sweep de abertura e assume o foco
-    if (judgeIntroTimerRef.current) { clearTimeout(judgeIntroTimerRef.current); judgeIntroTimerRef.current = null; }
-    // Foca a carta recém-revelada no anel (legível em 3D + 2D). A syncMesa já
-    // rodou antes (efeito declarado acima) e virou a carta pra cima.
-    const idx = gs.revealed[gs.revealed.length - 1];
-    scene.focarProva(idx);
-    // interjeição de um réu qualquer, sem tirar a câmera da carta
-    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
-    revealTimerRef.current = setTimeout(() => {
-      const plateia = gs.players.filter((p) => p.id !== gs.czarId && p.connected !== false);
-      const orador = plateia[abertas % Math.max(1, plateia.length)];
-      if (orador) sceneRef.current?.falarJogador(orador.id, INTERJEICOES[(abertas - 1) % INTERJEICOES.length]);
-    }, 700);
-  }, [gs.phase, gs.revealed, gs.players, gs.czarId]);
-
-  useEffect(() => () => {
-    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
-  }, []);
+  // O ato final dura o que a cutscene durar: uma mesa de oito tem mais gente
+  // pra tombar que uma de três. O cronograma vem da engine pra o painel 2D não
+  // descolar do teatro 3D quando alguém mexer no ritmo da queda.
+  const quedasFinais = Math.max(0, view.seats.length - view.winnerIds.length);
 
   // Agenda a liberação do painel de resultado sem tocar em estado de forma
   // síncrona: o setState só roda dentro do timeout. Veredito espera o martelo
-  // (~1s); encerramento espera o blackout+holofote+confete (~2.4s).
+  // (~1s); encerramento espera o velório inteiro.
   useEffect(() => {
     if (gs.phase !== 'round-end' && gs.phase !== 'game-end') return;
     const beat = `${gs.phase}:${gs.round}`;
     // Round-end: 2,2s deixa o martelo cair E o close no culpado respirar antes
-    // do painel central cobrir a cena. Game-end: 2,4s pro blackout/confete.
-    const atraso = gs.phase === 'game-end' ? 2400 : 2200;
+    // do painel central cobrir a cena.
+    const atraso = gs.phase === 'game-end'
+      ? semPerdaoFinaleTiming(quedasFinais).fim
+      : 2200;
     const t = window.setTimeout(() => setBeatPronto(beat), atraso);
     return () => window.clearTimeout(t);
-  }, [gs.phase, gs.round]);
+  }, [gs.phase, gs.round, quedasFinais]);
   const vereditoPronto = beatPronto === `round-end:${gs.round}`;
   const finalPronto = beatPronto === `game-end:${gs.round}`;
 

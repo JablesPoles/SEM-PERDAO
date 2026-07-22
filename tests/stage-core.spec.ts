@@ -1,11 +1,19 @@
+import * as THREE from 'three';
 import { expect, test } from 'playwright/test';
 
 import {
   FrameBenchmark,
   summarizeFrameTimes,
 } from '../src/lib/three/frameBenchmark';
-import { STAGE_QUALITY } from '../src/lib/three/tabletopStage';
-import { summarizeProjectedFrame } from '../src/lib/three/framing';
+import {
+  STAGE_QUALITY,
+  classifyStageViewport,
+  resolveCameraDefinition,
+} from '../src/lib/three/tabletopStage';
+import {
+  summarizeProjectedFrame,
+  summarizeVisibleMeshFrame,
+} from '../src/lib/three/framing';
 import {
   downgradedQuality,
   nextQualityPreference,
@@ -53,6 +61,46 @@ test('perfis reduzem resolução e sombras de forma monotônica', () => {
   expect(STAGE_QUALITY.performance.shadows).toBe(false);
 });
 
+test('viewport do palco distingue retrato, paisagem ampla e paisagem compacta', () => {
+  expect(classifyStageViewport(390, 844)).toBe('portrait');
+  expect(classifyStageViewport(360, 482)).toBe('portrait');
+  expect(classifyStageViewport(1440, 900)).toBe('landscape');
+  expect(classifyStageViewport(932, 834)).toBe('landscape');
+  expect(classifyStageViewport(844, 390)).toBe('compact-landscape');
+  expect(classifyStageViewport(794, 266)).toBe('compact-landscape');
+});
+
+test('variante de câmera herda campos ausentes e paisagem compacta tem fallback legado', () => {
+  const definition = {
+    position: [0, 2, 6],
+    target: [0, 1, 0],
+    fov: 44,
+    portrait: { fov: 38 },
+    compactLandscape: { position: [0, 1.8, 4.2] },
+  } as const;
+
+  expect(resolveCameraDefinition(definition, 'portrait')).toEqual({
+    position: [0, 2, 6],
+    target: [0, 1, 0],
+    fov: 38,
+  });
+  expect(resolveCameraDefinition(definition, 'compact-landscape')).toEqual({
+    position: [0, 1.8, 4.2],
+    target: [0, 1, 0],
+    fov: 44,
+  });
+
+  const legacyDefinition = {
+    position: [3, 2, 5],
+    target: [0, 1, 0],
+  } as const;
+  expect(resolveCameraDefinition(legacyDefinition, 'compact-landscape')).toEqual({
+    position: [3, 2, 5],
+    target: [0, 1, 0],
+    fov: 48,
+  });
+});
+
 test('qualidade automática respeita capacidade e pode degradar por frames reais', () => {
   expect(resolveEffectiveQuality('auto', {
     width: 390,
@@ -90,4 +138,46 @@ test('validador de enquadramento acusa borda, profundidade e margem segura', () 
   expect(overflowing?.overflowY).toBeCloseTo(0.09);
   expect(summarizeProjectedFrame([{ x: 0, y: 0, z: 1.2 }]))
     .toMatchObject({ fits: false, behindCamera: true });
+});
+
+test('enquadramento por mesh não cria falso overflow com AABB global em perspectiva', () => {
+  const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 100);
+  const root = new THREE.Group();
+  const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+  const material = new THREE.MeshBasicMaterial();
+  const nearLeft = new THREE.Mesh(geometry, material);
+  const farRight = new THREE.Mesh(geometry, material);
+  nearLeft.position.set(-0.4, 0, -2);
+  farRight.position.set(8, 0, -10);
+  root.add(nearLeft, farRight);
+
+  const report = summarizeVisibleMeshFrame(root, camera, 0.05);
+  expect(report).toMatchObject({
+    fits: true,
+    behindCamera: false,
+    overflowX: 0,
+    overflowY: 0,
+  });
+
+  // A implementação antiga unia as duas caixas antes da projeção. Isso cria
+  // o canto inexistente (x = 8.1, z = -1.9), muito além da borda direita.
+  const globalBox = new THREE.Box3().setFromObject(root);
+  const { min, max } = globalBox;
+  const globalCorners: THREE.Vector3[] = [];
+  for (const x of [min.x, max.x]) {
+    for (const y of [min.y, max.y]) {
+      for (const z of [min.z, max.z]) {
+        globalCorners.push(new THREE.Vector3(x, y, z));
+      }
+    }
+  }
+  const legacyReport = summarizeProjectedFrame(globalCorners.map((point) => {
+    const projected = point.project(camera);
+    return { x: projected.x, y: projected.y, z: projected.z };
+  }), 0.05);
+  expect(legacyReport?.fits).toBe(false);
+  expect(legacyReport?.overflowX).toBeGreaterThan(3);
+
+  geometry.dispose();
+  material.dispose();
 });

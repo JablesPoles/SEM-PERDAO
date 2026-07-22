@@ -14,6 +14,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Reu, EXPRESSOES, type Expressao, type Acao } from './reus';
 import type { MesaProofView, MesaSeatView, MesaView } from './mesaView';
+import {
+  normalizeActorIntentCommand,
+  type ActorIntent,
+  type ActorIntentCommand,
+} from '@/lib/mesa/actorContract';
 import { avatarColor } from '@/components/avatar';
 import {
   TabletopStage,
@@ -21,6 +26,7 @@ import {
   type StageQuality,
 } from './tabletopStage';
 import type { FramingReport } from './framing';
+import { PropLibrary, TRIBUNAL_PROPS_MANIFEST_URL } from './propLibrary';
 import {
   iniciarAmbiente,
   pararAmbiente,
@@ -47,6 +53,17 @@ const COR = {
 const CARD_W = 0.82;
 const CARD_H = 1.15;
 const CARD_T = 0.015; // espessura — cartas são caixas finas pra ter borda chanfrada
+
+const ACTOR_INTENT_ACTION: Partial<Record<ActorIntent, Acao>> = {
+  speak: 'apontar',
+  laugh: 'rir',
+  point: 'apontar',
+  clap: 'aplaudir',
+  celebrate: 'festejar',
+  facepalm: 'facepalm',
+  hit: 'atingido',
+  rage: 'tilt',
+};
 
 export type Reacao3D = 'tomate' | 'sapato' | 'rosa';
 
@@ -453,6 +470,20 @@ export class RetroMesa {
   private reuPorId = new Map<number, Reu>();
   private selfReu: Reu | null = null;
   private nomePorId = new Map<number, string>();
+  /**
+   * Quem já tombou no ato final. Vive na cena, não no `Reu`, porque `rebuildSeats`
+   * descarta e recria os avatares (uma desconexão no game-end basta) e a queda
+   * precisa continuar de pé — ou melhor, continuar caída.
+   */
+  private tombados = new Set<number>();
+  /**
+   * Props modelados no Blender. Carregam depois da cena montar, então tudo aqui
+   * é oportunista: quem chega antes usa a primitiva, e a mesa nunca espera o
+   * download para existir.
+   */
+  private readonly props = new PropLibrary();
+  /** Guarda o carregamento assíncrono dos props contra uma cena já descartada. */
+  private descartado = false;
   private proofBundles = new Map<string, Carta[]>();
   private proofByCard = new Map<Carta, string>();
   private proofStateSignatures = new Map<string, string>();
@@ -628,6 +659,34 @@ export class RetroMesa {
     window.addEventListener('pointerdown', this.onPrimeiroGesto);
     if (opts.mesaView) this.syncMesa(opts.mesaView);
     this.stage.start();
+    void this.carregarProps();
+  }
+
+  /**
+   * Busca os props modelados em segundo plano e substitui as primitivas que já
+   * estão em cena. Nada aqui bloqueia a montagem: se o download falhar, a mesa
+   * continua com a geometria procedural e ninguém percebe.
+   */
+  private async carregarProps(): Promise<void> {
+    const pronto = await this.props.load(TRIBUNAL_PROPS_MANIFEST_URL);
+    if (!pronto || this.descartado) return;
+    this.trocarMartelo();
+  }
+
+  private trocarMartelo(): void {
+    const modelado = this.props.criar('gavel');
+    if (!modelado || !this.martelo) return;
+    // Preserva posição e rotação: o martelo já foi colocado ao lado do juiz, e
+    // `posicionarMartelo` continua mandando nele depois da troca.
+    const posicao = this.martelo.position.clone();
+    const rotacao = this.martelo.rotation.clone();
+    for (const filho of [...this.martelo.children]) {
+      this.martelo.remove(filho);
+      descartarObjeto(filho);
+    }
+    this.martelo.add(modelado);
+    this.martelo.position.copy(posicao);
+    this.martelo.rotation.copy(rotacao);
   }
 
   private criarBayer(): THREE.DataTexture {
@@ -889,6 +948,9 @@ export class RetroMesa {
     this.selfReu = selfSeat ? (this.reuPorId.get(selfSeat.id) ?? null) : null;
     if (this.selfReu) this.selfReu.group.visible = this.atoAtual !== 'pov';
     this.posicionarMartelo(view.seats, view.judgeId);
+    // corpos novos, mesma sentença: quem já tinha tombado nasce caído, sem
+    // reencenar a queda (senão a mesa inteira desaba de novo a cada rebuild)
+    for (const id of this.tombados) this.reuPorId.get(id)?.tombar(true);
     // réus foram reconstruídos: a vitória (se ativa) renasce no próximo sync
     this.encerrarVitoria();
   }
@@ -1018,6 +1080,75 @@ export class RetroMesa {
     if (playerId === this.selfId) return this.reagir('VOCÊ', emoji, duracao);
     const nome = this.nomePorId.get(playerId);
     return nome ? this.reagir(nome, emoji, duracao) : false;
+  }
+
+  /** Executa o vocabulário neutro de `TableActor` no cultista real da mesa. */
+  playActorIntent(
+    playerId: number,
+    value: ActorIntent | Partial<ActorIntentCommand> & { intent: ActorIntent }
+  ): boolean {
+    const reu = this.reuPorId.get(playerId);
+    const command = normalizeActorIntentCommand(value);
+    if (!reu || !command) return false;
+    // `collapse` é terminal e precisa ser lembrado pela cena, não só pelo ator.
+    if (command.intent === 'collapse') return this.derrubarReu(playerId);
+    const action = ACTOR_INTENT_ACTION[command.intent];
+    if (action) reu.acao(action);
+    if (command.intent === 'idle') reu.setExpressao('neutro');
+    if (command.intent === 'sleep') reu.setExpressao('sono');
+    return true;
+  }
+
+  /**
+   * Apaga um cultista no ato final. `instantaneo` é para quem chega com a cena
+   * já decidida (reconexão) e não deve ver a queda acontecer de novo.
+   */
+  derrubarReu(playerId: number, instantaneo = false): boolean {
+    const reu = this.reuPorId.get(playerId);
+    if (!reu) return false;
+    const novo = !this.tombados.has(playerId);
+    this.tombados.add(playerId);
+    reu.tombar(instantaneo);
+    if (novo && !instantaneo) this.tremor(0.11);
+    return true;
+  }
+
+  /** Partida nova / saiu do game-end: a mesa inteira se levanta. */
+  levantarTodos() {
+    if (!this.tombados.size) return;
+    this.tombados.clear();
+    for (const reu of this.reus) reu.levantar();
+  }
+
+  /**
+   * O plano do sobrevivente: corte seco para o outro lado da mesa, atravessando
+   * os corpos caídos até quem ficou de pé no facho. É deliberadamente ABERTO —
+   * um close no vencedor esconderia justamente o que dá sentido à cena.
+   */
+  planoFinal(playerId: number): boolean {
+    const reu = this.reuPorId.get(playerId);
+    if (!reu) return false;
+    const p = reu.group.position.clone();
+    const az = Math.atan2(p.x, p.z);
+    const paraCentro = new THREE.Vector3(-Math.sin(az), 0, -Math.cos(az));
+    const olho = p.clone().addScaledVector(paraCentro, 8.2);
+    olho.y = 2.15;
+    const alvo = new THREE.Vector3(p.x * 0.95, 1.2, p.z * 0.95);
+
+    this.atoAtual = 'mesa';
+    this.controls.enableZoom = true;
+    this.controls.enablePan = false;
+    this.controls.rotateSpeed = 1;
+    this.controls.minAzimuthAngle = -Infinity;
+    this.controls.maxAzimuthAngle = Infinity;
+    this.controls.minPolarAngle = 0.2;
+    this.controls.maxPolarAngle = Math.PI / 2;
+    this.controls.minDistance = 3;
+    this.controls.maxDistance = 16;
+    this.lampadaVisual.visible = true;
+    this.cortarPara(olho, alvo, this.camera.aspect < 0.9 ? 50 : 42);
+    this.tremor(0.2);
+    return true;
   }
 
   /** Projétil multiplayer com origem e alvo reais, inclusive a lente do POV. */
@@ -1275,8 +1406,12 @@ export class RetroMesa {
     }
 
     // o ato final: game-end liga a festa fúnebre; qualquer outra fase desliga
+    // e devolve os caídos à cadeira (rodada nova não começa com defunto).
     if (view.phase === 'game-end') this.iniciarVitoria(view);
-    else this.encerrarVitoria();
+    else {
+      this.encerrarVitoria();
+      this.levantarTodos();
+    }
 
     this.atualizarLousa(view);
   }
@@ -1464,7 +1599,8 @@ export class RetroMesa {
         reu.acao('festejar');
         reu.setExpressao('riso');
       }
-      const perdedores = this.reus.filter((r) => !r.manequim && !v.vencedores.includes(r));
+      // quem já tombou está fora da cena: nada de facepalm vindo de um defunto
+      const perdedores = this.reus.filter((r) => !r.manequim && !r.caido && !v.vencedores.includes(r));
       const azarado = perdedores[Math.floor(Math.random() * perdedores.length)];
       if (azarado) {
         azarado.acao(Math.random() < 0.5 ? 'facepalm' : 'tilt');
@@ -1784,7 +1920,23 @@ export class RetroMesa {
     });
   }
 
+  /**
+   * Arremesso: usa o modelo do Blender quando a biblioteca já chegou e cai na
+   * primitiva enquanto não chegou. A troca é invisível — os dois têm a mesma
+   * escala e o mesmo ponto de origem.
+   */
   private criarObjetoReacao(tipo: Reacao3D): THREE.Group {
+    const apelido = { tomate: 'tomato', sapato: 'shoe', rosa: 'rose' }[tipo];
+    const modelado = this.props.criar(apelido);
+    if (modelado) {
+      const group = new THREE.Group();
+      group.add(modelado);
+      return group;
+    }
+    return this.criarObjetoReacaoProcedural(tipo);
+  }
+
+  private criarObjetoReacaoProcedural(tipo: Reacao3D): THREE.Group {
     const group = new THREE.Group();
 
     if (tipo === 'tomate') {
@@ -2167,9 +2319,11 @@ export class RetroMesa {
   };
 
   dispose() {
+    this.descartado = true;
     this.stage.stop();
     window.removeEventListener('pointerdown', this.onPrimeiroGesto);
     this.controls.dispose();
+    this.props.dispose();
     this.encerrarVitoria();
     this.lousa?.tex?.dispose();
     pararAmbiente();

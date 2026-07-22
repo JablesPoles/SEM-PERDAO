@@ -34,13 +34,19 @@ export type CultistFace = (typeof CULTIST_FACES)[number];
 export type CultistAccent = (typeof CULTIST_ACCENTS)[number];
 export type CultistAccessory = (typeof CULTIST_ACCESSORIES)[number];
 
-export interface CultistAppearance {
+/**
+ * `type` e não `interface` de propósito: só um type alias ganha index signature
+ * implícito, e sem ele a aparência do cultista não é aceita onde a engine pede
+ * o `ActorAppearance` genérico (`slot → opção`). O vestuário é específico do
+ * jogo; o contrato de ator é neutro — este alias é a ponte entre os dois.
+ */
+export type CultistAppearance = {
   robe: CultistRobe;
   hood: CultistHood;
   face: CultistFace;
   accent: CultistAccent;
   accessory: CultistAccessory;
-}
+};
 
 export const DEFAULT_CULTIST_APPEARANCE: CultistAppearance = Object.freeze({
   robe: 'blood',

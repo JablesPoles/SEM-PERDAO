@@ -26,6 +26,12 @@ export type Acao = 'soco' | 'apontar' | 'aplaudir' | 'festejar' | 'facepalm' | '
 export type ImpactoReu = 'tomate' | 'sapato' | 'rosa';
 export const ACOES: Acao[] = ['soco', 'apontar', 'aplaudir', 'festejar', 'facepalm', 'rir', 'atingido', 'tilt'];
 
+/**
+ * O tombo não é uma `Acao`: ações são pulsos que terminam e devolvem o corpo ao
+ * idle. Tombar é um ESTADO terminal que substitui o idle até `levantar()`.
+ */
+const DURACAO_QUEDA = 1.15;
+
 const DURACAO: Record<Acao, number> = {
   soco: 0.35,
   apontar: 1.2,
@@ -407,10 +413,21 @@ export class Reu {
   private anim: { tipo: Acao; t: number } | null = null;
   private nivelTilt = 0;
   private texturas: THREE.Texture[] = [];
+  private tombado = false;
+  private quedaT = 0;
+  /** Lado da queda derivado do nome: todo cliente derruba pro mesmo lado. */
+  private quedaLado = 1;
 
   constructor(nome: string, cor: string, opts: ReuOpts = {}) {
     this.nome = nome;
     this.manequim = !!opts.manequim;
+    let hashNome = 0;
+    for (let i = 0; i < nome.length; i++) hashNome = (hashNome * 31 + nome.charCodeAt(i)) >>> 0;
+    this.quedaLado = hashNome % 2 === 0 ? 1 : -1;
+    this.group.name = 'actor-root';
+    const rootAnchor = new THREE.Object3D();
+    rootAnchor.name = 'actor-anchor-root';
+    this.group.add(rootAnchor);
     const appearance: CultistAppearance = {
       ...DEFAULT_CULTIST_APPEARANCE,
       ...opts.appearance,
@@ -525,12 +542,20 @@ export class Reu {
 
     capuzGrp.position.y = ALTURA_ROSTO + 0.13;
     capuzGrp.rotation.x = 0.12; // debruçado sobre a mesa
+    const headAnchor = new THREE.Object3D();
+    headAnchor.name = 'actor-anchor-head';
+    headAnchor.position.set(0, 0.06, 0.42);
+    capuzGrp.add(headAnchor);
     if (opts.juiz) {
       capuzGrp.scale.setScalar(1.18);
       capuzGrp.position.y += 0.08;
     }
 
     this.corpo.add(tunica, cowl, corda, pingente, capuzGrp);
+    const chestAnchor = new THREE.Object3D();
+    chestAnchor.name = 'actor-anchor-chest';
+    chestAnchor.position.set(0, 1.02, 0.7);
+    this.corpo.add(chestAnchor);
 
     if (!this.manequim) {
       // Crachá externo com backing e lanyard em V — a seita bate ponto.
@@ -552,6 +577,10 @@ export class Reu {
       );
       frente.position.z = 0.021;
       crachaGrp.add(backing, frente);
+      const nameplateAnchor = new THREE.Object3D();
+      nameplateAnchor.name = 'actor-anchor-nameplate';
+      nameplateAnchor.position.z = 0.04;
+      crachaGrp.add(nameplateAnchor);
       // Duas argolas visiveis prendem a credencial, em vez de ela flutuar no robe.
       for (const lado of [-1, 1]) {
         const argola = new THREE.Mesh(new THREE.TorusGeometry(0.034, 0.009, 6, 12), matCorda);
@@ -589,6 +618,10 @@ export class Reu {
       );
       frente.position.z = 0.017;
       plaqGrp.add(backing, frente);
+      const nameplateAnchor = new THREE.Object3D();
+      nameplateAnchor.name = 'actor-anchor-nameplate';
+      nameplateAnchor.position.z = 0.035;
+      plaqGrp.add(nameplateAnchor);
       plaqGrp.position.set(0, 0.9, 0.73);
       plaqGrp.rotation.x = -0.1;
       plaqGrp.rotation.z = 0.06;
@@ -658,6 +691,16 @@ export class Reu {
         punho.position.set(-0.02 * lado, 0.02, -0.15);
         punho.rotation.x = Math.PI / 2;
         mao.add(palma, polegar, punho);
+        const handAnchor = new THREE.Object3D();
+        handAnchor.name = lado < 0 ? 'actor-anchor-left-hand' : 'actor-anchor-right-hand';
+        handAnchor.position.set(0, 0.02, 0.12);
+        mao.add(handAnchor);
+        if (lado > 0) {
+          const projectileAnchor = new THREE.Object3D();
+          projectileAnchor.name = 'actor-anchor-projectile-origin';
+          projectileAnchor.position.set(0.08, 0.06, 0.18);
+          mao.add(projectileAnchor);
+        }
         const base = new THREE.Vector3(0.52 * lado, BASE_MAO_Y, 0.88);
         mao.position.copy(base);
         this.baseMaos.push(base);
@@ -690,7 +733,7 @@ export class Reu {
 
   /** Dispara uma ação animada; a nova interrompe a atual (regra do caos). */
   acao(tipo: Acao) {
-    if (this.manequim) return;
+    if (this.manequim || this.tombado) return;
     if (this.anim && PRIORIDADE[this.anim.tipo] > PRIORIDADE[tipo]) return;
     this.anim = { tipo, t: 0 };
     if (tipo === 'rir' || tipo === 'festejar') this.setExpressao('riso');
@@ -706,7 +749,7 @@ export class Reu {
 
   /** Impactos acumulam irritação: o segundo golpe próximo dispara tilt total. */
   receberImpacto(tipo: ImpactoReu) {
-    if (this.manequim) return;
+    if (this.manequim || this.tombado) return;
     if (tipo === 'rosa') {
       this.nivelTilt = Math.max(0, this.nivelTilt - 1);
       this.anim = null;
@@ -723,6 +766,32 @@ export class Reu {
     this.acao('soco');
   }
 
+  /**
+   * Apaga o cultista: ele desaba sobre a mesa e não levanta mais. `instantaneo`
+   * é para quem chega depois (reconexão, réus reconstruídos) e precisa ver o
+   * resultado sem reencenar a queda.
+   */
+  tombar(instantaneo = false) {
+    if (this.tombado) return;
+    this.tombado = true;
+    this.quedaT = instantaneo ? 1 : 0;
+    this.anim = null;
+    this.nivelTilt = 0;
+    this.setExpressao('sono');
+  }
+
+  /** Devolve o corpo ao idle (partida nova, saiu do game-end). */
+  levantar() {
+    if (!this.tombado) return;
+    this.tombado = false;
+    this.quedaT = 0;
+    this.setExpressao('neutro');
+  }
+
+  get caido() {
+    return this.tombado;
+  }
+
   tick(t: number, dt: number) {
     // respiração base — as ações somam por cima
     const resp = Math.sin(t * 1.3 + this.fase);
@@ -730,6 +799,44 @@ export class Reu {
     this.corpo.rotation.x = 0;
     this.corpo.rotation.y = 0;
     this.corpo.rotation.z = Math.sin(t * 0.45 + this.fase) * 0.035;
+
+    // Tombo: pose terminal que SUBSTITUI o idle. Quem caiu não respira, não
+    // gesticula e não volta — por isso é recalculada aqui, antes de qualquer
+    // ação, e não somada por cima como as outras animações.
+    if (this.tombado) {
+      this.quedaT = Math.min(1, this.quedaT + dt / DURACAO_QUEDA);
+      const queda = this.quedaT * this.quedaT * (3 - 2 * this.quedaT);
+      // um quique só, no fim da queda: o corpo bate no tampo e assenta
+      const quique = this.quedaT > 0.62
+        ? Math.sin(((this.quedaT - 0.62) / 0.38) * Math.PI) * 0.05
+        : 0;
+      this.corpo.rotation.x = 0.92 * queda - quique;
+      this.corpo.rotation.z = this.quedaLado * 0.34 * queda;
+      this.corpo.position.y = -0.3 * queda + quique * 0.4;
+      if (this.capuzGrp) {
+        // o capuz tomba junto e engole o rosto: é isso que vende "apagou"
+        this.capuzGrp.rotation.x = 0.12 + 0.62 * queda;
+        this.capuzGrp.rotation.z = this.quedaLado * 0.2 * queda;
+      }
+      if (this.crachaGrp) {
+        this.crachaGrp.position.y = 1;
+        this.crachaGrp.rotation.x = -0.17 + 0.5 * queda;
+        this.crachaGrp.rotation.z = -0.065 - this.quedaLado * 0.3 * queda;
+      }
+      // manequins não têm luvas; o corpo cai do mesmo jeito
+      if (this.maos.length === 2) {
+        const maoY = BASE_MAO_Y - 0.62 * queda;
+        for (let i = 0; i < 2; i++) {
+          this.maos[i].position.set(
+            this.baseMaos[i].x * (1 + 0.5 * queda),
+            maoY,
+            this.baseMaos[i].z + 0.34 * queda
+          );
+        }
+      }
+      return;
+    }
+
     if (this.manequim) return;
 
     // pose idle das mãos (flutuando na beirada da mesa)

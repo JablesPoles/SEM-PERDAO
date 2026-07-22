@@ -12,6 +12,7 @@ export type SoundName =
   | 'countdown'  // contagem ritual antes de começar
   | 'roundWin'   // você levou a rodada
   | 'chat'       // mensagem de outra pessoa
+  | 'collapse'   // um cultista tomba no ato final
   | 'victory'    // venceu a partida
   | 'defeat'     // a partida acabou e não foi você
   | 'ending';    // encerramento/recap da sessão
@@ -305,6 +306,8 @@ const CUES: Record<SoundName, Note[]> = {
   countdown: [[392, 0, 0.07, 0.11, 'square'], [784, 0.045, 0.08, 0.08, 'triangle']],
   roundWin:  [[659, 0, 0.1, 0.16], [988, 0.09, 0.18, 0.16]],
   chat:      [[740, 0, 0.08, 0.12, 'sine']],
+  // corpo caindo na mesa: baque grave e um estalo curto de madeira por cima
+  collapse:  [[110, 0, 0.16, 0.2, 'sine'], [58, 0.02, 0.3, 0.22, 'sine'], [190, 0, 0.05, 0.08, 'square']],
   victory:   [[523, 0, 0.14, 0.2], [659, 0.13, 0.14, 0.2], [784, 0.26, 0.14, 0.2], [1047, 0.39, 0.3, 0.22]],
   defeat:    [[392, 0, 0.18, 0.18], [294, 0.16, 0.28, 0.18]],
   ending:    [[196, 0, 0.24, 0.14, 'triangle'], [294, 0.2, 0.22, 0.14, 'triangle'], [392, 0.4, 0.5, 0.16, 'sine']],
@@ -341,12 +344,31 @@ const CUE_ASSETS: Partial<Record<SoundName, string>> = {
   countdown: 'sfx/countdown-beep',
   roundWin: 'sfx/round-win',
   chat: 'sfx/chat-blip',
+  collapse: 'sfx/body-drop',
   victory: 'music/victory-sting',
   defeat: 'music/defeat-sting',
   ending: 'music/finale-theme',
 };
 
 let preloaded = false;
+
+/**
+ * A martelada de abertura de sessão: três batidas rápidas.
+ *
+ * Devolve um cancelador porque as batidas 2 e 3 são agendadas — sair da sala no
+ * meio da rajada não pode deixar o porão martelando sozinho. Também é a API que
+ * o próprio juiz vai usar quando puder bater o martelo na mão.
+ */
+export function playGavel(strikes = 3, gapMs = 300): () => void {
+  const total = Math.max(1, Math.min(6, Math.round(strikes)));
+  const intervalo = Math.max(80, Math.min(1_000, Math.round(gapMs)));
+  playSound('stamp');
+  const timers: number[] = [];
+  for (let strike = 1; strike < total; strike += 1) {
+    timers.push(window.setTimeout(() => playSound('stamp'), strike * intervalo));
+  }
+  return () => { for (const timer of timers) window.clearTimeout(timer); };
+}
 
 export function playSound(name: SoundName) {
   const channel: AudioChannel = name === 'victory' || name === 'defeat' || name === 'ending'

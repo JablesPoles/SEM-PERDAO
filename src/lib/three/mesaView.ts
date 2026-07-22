@@ -158,6 +158,8 @@ export interface MesaView {
   readonly suddenDeath: boolean;
   readonly scoreLimit: number;
   readonly phaseId: string;
+  /** Revisão pública autoritativa; permite ignorar snapshots atrasados. */
+  readonly stateRevision: number;
   readonly phaseStartedAt: number;
   readonly phaseEndsAt: number | null;
   readonly phaseDurationSeconds: number | null;
@@ -313,6 +315,9 @@ export function projectMesaView(gs: GameState, myId: number): MesaView {
     scoreLimit: gs.scoreLimit,
     phaseId: gs.phaseId
       ?? `legacy:r${gs.round}:${gs.phase}:${Number.isFinite(gs.phaseStartedAt) ? gs.phaseStartedAt : 0}`,
+    stateRevision: Number.isSafeInteger(gs.stateRevision) && Number(gs.stateRevision) >= 0
+      ? Number(gs.stateRevision)
+      : 0,
     phaseStartedAt: gs.phaseStartedAt,
     phaseEndsAt,
     phaseDurationSeconds: phaseEndsAt === null

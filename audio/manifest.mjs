@@ -30,9 +30,14 @@ export const SFX = [
   },
   {
     id: 'hammer-stamp',
-    prompt: 'a heavy judge gavel slamming a wooden block once, then a rubber stamp thump on paper, brutal and final, deep low end, courtroom basement',
-    durationSeconds: 1.1,
-    promptInfluence: 0.6,
+    // Aprovado em 22/07/2026 na terceira tentativa. As duas anteriores saíram
+    // metálicas: a segunda tentou consertar negando ("no metal, no bell") e
+    // piorou, porque citar o defeito o torna mais provável. Esta não menciona
+    // metal nem "gavel" — em filme o martelo de tribunal leva um ring metálico
+    // na pós, e a palavra carrega isso. Só material e objeto.
+    prompt: 'hardwood on hardwood foley: a solid wooden hammer struck twice against a heavy wooden desk, dull woody thock, tight and dry, recorded close in a small room',
+    durationSeconds: 0.9,
+    promptInfluence: 0.85,
   },
   {
     id: 'tick',
@@ -51,6 +56,12 @@ export const SFX = [
     prompt: 'a short sinister sting, a low brass swell with a single dissonant hit, someone was just condemned, dark and satisfying',
     durationSeconds: 1.3,
     promptInfluence: 0.4,
+  },
+  {
+    id: 'body-drop',
+    prompt: 'a heavy hooded body slumping face-down onto a wooden table, dull fleshy thud with fabric rustle and a faint chair creak, close mic, dry, no music',
+    durationSeconds: 0.9,
+    promptInfluence: 0.7,
   },
   {
     id: 'chat-blip',
@@ -145,8 +156,27 @@ export const AMBIENCE = [
 // ── NARRAÇÃO (Text-to-Speech) ───────────────────────────────────────────────
 // O narrador sinistro do porão. Lê linhas FIXAS (não fala nomes de jogador —
 // TTS por nome é inviável). Cada `event` toca uma variante aleatória.
-// Voz: defina ELEVENLABS_VOICE_ID (grave, sombria). Modelo: eleven_multilingual_v2.
-export const VOICE = [
+// Voz: defina ELEVENLABS_VOICE_ID (grave, rasgada). Modelo: ELEVENLABS_TTS_MODEL.
+
+/**
+ * Direção de atuação por evento, em tags inline. **Só o `eleven_v3` entende
+ * isso** — o `multilingual_v2` leria os colchetes em voz alta, então o gerador
+ * descarta as tags quando o modelo é outro. Ficam aqui, e não no script, pelo
+ * mesmo motivo dos prompts de SFX: é direção artística, não infraestrutura.
+ *
+ * Testado em 22/07/2026 e **rejeitado**: o `eleven_v3` lê estas linhas em
+ * espanhol, e com `languageCode: 'pt'` sai um português pior que o do
+ * `multilingual_v2`. O default é v2 por isso, não por conservadorismo. Só
+ * reconsidere com uma amostra nova em PT-BR — as tags continuam aqui esperando.
+ */
+export const VOICE_DIRECTION = {
+  guilty: '[slow][menacing]',
+  'round-open': '[low][ominous]',
+  judging: '[whispers][ominous]',
+  finale: '[slow][solemn]',
+};
+
+const LINHAS = [
   { id: 'guilty-1', event: 'guilty', text: 'Culpado.' },
   { id: 'guilty-2', event: 'guilty', text: 'Sem perdão.' },
   { id: 'guilty-3', event: 'guilty', text: 'O tribunal decidiu.' },
@@ -163,6 +193,11 @@ export const VOICE = [
   { id: 'finale-2', event: 'finale', text: 'O resto apodrece aqui embaixo.' },
   { id: 'finale-3', event: 'finale', text: 'O tribunal está encerrado.' },
 ];
+
+export const VOICE = LINHAS.map((linha) => ({
+  ...linha,
+  direction: VOICE_DIRECTION[linha.event] ?? '',
+}));
 
 /** Tudo junto, anotado com o `kind`, pra o gerador iterar. */
 export const MANIFEST = [

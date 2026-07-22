@@ -315,6 +315,7 @@ export default function SalaPage({ params }: PageProps) {
         <MesaOnline
           state={mp.gameState}
           myId={mp.myPlayerId ?? 0}
+          roomSessionId={`room:${roomCode}`}
           onSubmit={(cardIds) => mp.sendAction({
             type: 'submit', cardIds, phaseId,
           })}

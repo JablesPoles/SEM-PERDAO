@@ -40,8 +40,26 @@ Se alguém perder a conexão durante a partida, o assento, a mão e os pontos s�
 - `src/components/lobby/RitualLobby.tsx` — customização, ready e regras do pré-jogo
 - `src/components/Tribunal3DGame.tsx` — HUD e fluxo da partida 3D
 - `src/lib/three/` — cena, cultistas, projeção segura do estado e áudio 3D
+- `src/lib/mesa/` — contratos neutros incubados para a futura A Mesa Engine
 - `src/components/GameBoard.tsx` — fallback 2D quando WebGL não está disponível
 - `ref/` — PDF das cartas originais e direções visuais
+
+## Laboratório da engine
+
+Abra `/lab/actors` para validar personagem, ações, expressões, atos de câmera,
+enquadramento, qualidade e orçamento gráfico. A arquitetura, o pipeline glTF e o
+plano de migração para os outros jogos estão em
+[`docs/mesa-engine`](docs/mesa-engine/README.md).
+
+Com o servidor aberto, gere a matriz de referência sem navegar manualmente:
+
+```bash
+npm run capture:lab -- --base-url=http://localhost:3000
+```
+
+As capturas de palco, controles e telemetria saem em
+`captures/character-lab/` para desktop, celular em pé e celular deitado. A pasta
+é local e ignorada pelo Git.
 
 ## Deploy (Vercel)
 

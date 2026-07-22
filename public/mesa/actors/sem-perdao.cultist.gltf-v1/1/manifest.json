@@ -1,0 +1,158 @@
+{
+  "schema": "a-mesa.actor/v1",
+  "id": "sem-perdao.cultist.gltf-v1",
+  "label": "Cultista glTF · slot v1",
+  "version": 1,
+  "runtime": "gltf",
+  "source": {
+    "uri": "./actor.glb",
+    "authoring": "tools/blender/cultist.py"
+  },
+  "coordinateSystem": {
+    "metersPerUnit": 1,
+    "forward": "+z",
+    "up": "+y"
+  },
+  "rootNode": "ActorRoot",
+  "clips": {
+    "idle": {
+      "clip": "idle",
+      "loop": "repeat",
+      "fadeMs": 160,
+      "speed": 1
+    },
+    "speak": {
+      "clip": "speak",
+      "loop": "once",
+      "fadeMs": 90,
+      "speed": 1
+    },
+    "laugh": {
+      "clip": "laugh",
+      "loop": "once",
+      "fadeMs": 90,
+      "speed": 1
+    },
+    "point": {
+      "clip": "point",
+      "loop": "once",
+      "fadeMs": 80,
+      "speed": 1
+    },
+    "clap": {
+      "clip": "clap",
+      "loop": "once",
+      "fadeMs": 80,
+      "speed": 1
+    },
+    "celebrate": {
+      "clip": "celebrate",
+      "loop": "once",
+      "fadeMs": 100,
+      "speed": 1
+    },
+    "facepalm": {
+      "clip": "facepalm",
+      "loop": "once",
+      "fadeMs": 100,
+      "speed": 1
+    },
+    "hit": {
+      "clip": "hit",
+      "loop": "once",
+      "fadeMs": 45,
+      "speed": 1
+    },
+    "rage": {
+      "clip": "rage",
+      "loop": "once",
+      "fadeMs": 50,
+      "speed": 1
+    },
+    "sleep": {
+      "clip": "sleep",
+      "loop": "repeat",
+      "fadeMs": 180,
+      "speed": 1
+    },
+    "collapse": {
+      "clip": "collapse",
+      "loop": "once",
+      "fadeMs": 60,
+      "speed": 1
+    }
+  },
+  "expressions": {},
+  "anchors": {
+    "root": "AnchorRoot",
+    "head": "AnchorHead",
+    "chest": "AnchorChest",
+    "nameplate": "AnchorNameplate",
+    "left-hand": "AnchorLeftHand",
+    "right-hand": "AnchorRightHand",
+    "projectile-origin": "AnchorProjectileOrigin"
+  },
+  "variants": {
+    "hood": {
+      "classic": [
+        "HoodClassic"
+      ],
+      "spire": [
+        "HoodSpire"
+      ],
+      "shrouded": [
+        "HoodShrouded"
+      ]
+    },
+    "accessory": {
+      "none": [],
+      "chain": [
+        "PropChain"
+      ],
+      "candle": [
+        "PropCandle"
+      ],
+      "relic": [
+        "PropRelic"
+      ]
+    }
+  },
+  "palette": {
+    "robe": {
+      "material": "Tunica",
+      "property": "baseColorFactor",
+      "values": {
+        "blood": "#8f201b",
+        "ash": "#625d63",
+        "midnight": "#25243a",
+        "moss": "#48563b",
+        "violet": "#4a2a5e",
+        "rust": "#8a4c1f",
+        "abyss": "#1e4744",
+        "linen": "#b3a98f"
+      }
+    },
+    "accent": {
+      "material": "Acessorio",
+      "property": "baseColorFactor",
+      "values": {
+        "bone": "#d8ccb2",
+        "brass": "#a97d3e",
+        "scarlet": "#ff3b2f",
+        "cyan": "#43d9d4",
+        "gold": "#e3b341",
+        "amethyst": "#a06bff"
+      }
+    }
+  },
+  "lods": [],
+  "budget": {
+    "maxDownloadBytes": 300000,
+    "maxTriangles": 2500,
+    "maxDrawCalls": 8,
+    "maxBones": 24,
+    "maxTextureEdge": 512
+  },
+  "preload": "lobby",
+  "fallbackActorId": "sem-perdao.cultist.procedural-v5"
+}
