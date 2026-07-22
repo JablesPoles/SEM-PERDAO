@@ -1,0 +1,22 @@
+[
+  "sfx/card-play",
+  "sfx/card-flip",
+  "sfx/hammer-stamp",
+  "sfx/tick",
+  "sfx/countdown-beep",
+  "sfx/round-win",
+  "sfx/body-drop",
+  "sfx/chat-blip",
+  "voice/guilty-1",
+  "voice/guilty-2",
+  "voice/guilty-3",
+  "voice/guilty-4",
+  "voice/round-open-1",
+  "voice/round-open-2",
+  "voice/round-open-3",
+  "voice/judging-1",
+  "voice/judging-2",
+  "voice/finale-1",
+  "voice/finale-2",
+  "voice/finale-3"
+]
