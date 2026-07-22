@@ -4,6 +4,29 @@ Toda mudança geral feita dentro de um jogo deve ganhar uma entrada aqui antes d
 ser extraída. Registre contrato afetado, motivo, compatibilidade e ação exigida
 dos outros repositórios.
 
+## 2026-07-22 — expressão que não é morph target
+
+### Adicionado
+
+- `textureSlots` no `a-mesa.actor/v1` + `ActorTexturePainter`. Nem toda
+  expressão é morph: o cultista tem a carinha desenhada num plano dentro do
+  capuz, e essa arte é do jogo. A engine não pode saber desenhar um cultista,
+  mas sabe **onde** colar o resultado — o manifesto declara o material e o
+  callback entrega o pixel.
+- Canal `emissive-mask`: a textura acende e recorta pelo alpha. É o que faz o
+  rosto sobreviver ao blackout do ato final, quando ele mais importa.
+- O repaint dispara em `setAppearance` **e** em `setExpression`, porque a cara
+  depende das duas coisas.
+
+### Compatibilidade e ação nos outros repositórios
+
+- **Aditivo.** Manifesto sem `textureSlots` recebe `{}`; ator sem pintor mantém
+  a textura embutida no asset. Slot que o jogo não sabe pintar é ignorado.
+- Texturas pintadas são por instância e descartadas com o ator — a do template
+  nunca é tocada, senão a mesa inteira herdaria o rosto de um réu só.
+- Vale para qualquer jogo cuja expressão seja pixel e não geometria: placa,
+  bandeira, mostrador, carta na mão.
+
 ## 2026-07-22 — assets saem de script, não de código
 
 ### Adicionado

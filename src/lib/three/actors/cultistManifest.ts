@@ -93,6 +93,12 @@ export const PROCEDURAL_CULTIST_MANIFEST: Readonly<ActorAssetManifest> = Object.
       },
     },
   },
+  // O `Reu` desenha o próprio rosto no construtor, mas o slot é declarado
+  // para os dois runtimes descreverem a mesma coisa — quem lê o manifesto não
+  // deveria adivinhar que só um deles tem cara.
+  textureSlots: {
+    face: { material: 'rosto', channel: 'emissive-mask' },
+  },
   lods: [],
   budget: {
     maxDownloadBytes: 1,

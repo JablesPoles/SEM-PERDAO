@@ -145,6 +145,12 @@
       }
     }
   },
+  "textureSlots": {
+    "face": {
+      "material": "Rosto",
+      "channel": "emissive-mask"
+    }
+  },
   "lods": [],
   "budget": {
     "maxDownloadBytes": 300000,

@@ -4,6 +4,7 @@ import { GltfActorAssetStore } from './actors/gltfActorAssetStore';
 import { loadActorManifest } from '@/lib/mesa/actorManifest';
 import { PropLibrary, TRIBUNAL_PROPS_MANIFEST_URL } from './propLibrary';
 import { RIGGED_CULTIST_MANIFEST_URL } from './actors/characterActorCatalog';
+import { createCultistFacePainter } from './actors/cultistFacePainter';
 import type { ActorAppearance, ActorIntent, TableActor } from '@/lib/mesa/actorContract';
 
 /**
@@ -131,6 +132,7 @@ export class ModelGalleryScene {
         actorId: 'gallery-cultist',
         distance: 4,
         castShadow: true,
+        paintTexture: createCultistFacePainter(),
       });
       if (this.descartado) {
         ator.dispose();

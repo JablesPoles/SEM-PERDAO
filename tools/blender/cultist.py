@@ -58,13 +58,37 @@ PERFIL_MANTELETE = [
     (0.23, 1.69), (0.37, 1.59), (0.49, 1.45), (0.56, 1.31), (0.43, 1.26),
 ]
 
-# Capuz cônico e alto, como nas referências: altura ≳ 1,3× o raio. Abobadado
-# some no filtro de pixel; ponta define o personagem mesmo a 160px de altura.
-# `boca` = quantos setores dos 8 viram abertura. 2 = 90°, 3 = 135°.
+# Cada capuz tem PERFIL PRÓPRIO, não uma escala do mesmo desenho. Escalar uma
+# silhueta só produz três versões do mesmo chapéu — foi o que fez a "mortalha"
+# virar cogumelo, com a aba saindo na horizontal como prateleira.
+#
+# `perfil` e `aba` são (fator_raio, fator_altura) normalizados: o primeiro sobe
+# da base à ponta, o segundo desce da base ao ombro.
+# `boca` = quantos dos 8 setores viram abertura (2 = 90°, 3 = 135°).
 CAPUZES = {
-    'HoodClassic': dict(raio=0.47, altura=0.92, inclinacao=0.15, boca=2, aba=0.30, boca_ate=3),
-    'HoodSpire': dict(raio=0.40, altura=1.26, inclinacao=0.07, boca=2, aba=0.24, boca_ate=3),
-    'HoodShrouded': dict(raio=0.56, altura=0.68, inclinacao=0.24, boca=3, aba=0.48, boca_ate=3),
+    # Ogiva de monge: barriga no meio, ponta média, aba curta na nuca.
+    'HoodClassic': dict(
+        raio=0.47, altura=0.92, inclinacao=0.15, boca=2, boca_ate=3,
+        perfil=[(0.76, 0.00), (1.00, 0.15), (0.95, 0.36), (0.74, 0.58), (0.40, 0.82), (0.02, 1.00)],
+        aba=[(0.74, 0.00), (0.80, 0.34), (0.66, 0.66)],
+    ),
+    # Agulha: cone quase reto, sem barriga, ponta longa. A leitura é a altura.
+    'HoodSpire': dict(
+        raio=0.39, altura=1.30, inclinacao=0.06, boca=2, boca_ate=3,
+        perfil=[(0.86, 0.00), (0.96, 0.10), (0.80, 0.32), (0.55, 0.58), (0.27, 0.82), (0.02, 1.00)],
+        aba=[(0.84, 0.00), (0.88, 0.28), (0.74, 0.54)],
+    ),
+    # Mortalha: cúpula baixa e larga, e um pano LONGO que cai colado ao corpo.
+    # A aba precisa descer, não abrir — abrir é o que produz a prateleira.
+    # Duas regras que a mortalha violava e que a faziam virar cogumelo:
+    # 1. a base precisa ENTRAR no mantelete (raio ≲ 0,40 naquela altura);
+    # 2. o alargamento tem que ser mais vertical que horizontal. Ganhar 0,20 de
+    #    raio em 0,17 de altura é uma aba de chapéu, não um capuz.
+    'HoodShrouded': dict(
+        raio=0.57, altura=0.66, inclinacao=0.22, boca=3, boca_ate=3,
+        perfil=[(0.62, 0.00), (0.78, 0.19), (0.92, 0.44), (0.84, 0.67), (0.48, 0.87), (0.02, 1.00)],
+        aba=[(0.60, 0.00), (0.72, 0.50), (0.66, 1.00)],
+    ),
 }
 
 MATERIAIS = {
@@ -355,7 +379,7 @@ def construir_corda():
     return objeto_de('Rope', verts, faces, ['Acessorio'])
 
 
-def construir_capuz(nome, raio, altura, inclinacao, boca, aba, boca_ate):
+def construir_capuz(nome, raio, altura, inclinacao, boca, boca_ate, perfil, aba):
     """
     Capuz facetado com boca de tecido REAL.
 
@@ -370,16 +394,7 @@ def construir_capuz(nome, raio, altura, inclinacao, boca, aba, boca_ate):
     """
     base_z = ALTURA_BASE_CAPUZ
     n_seg = SEGMENTOS_CAPUZ
-    # Perfil ANGULOSO: sobe quase reto e vira ponta. Ombro arredondado no meio
-    # do perfil é o que fazia o capuz parecer capacete.
-    perfil = [
-        (raio * 0.76, base_z),
-        (raio * 1.00, base_z + altura * 0.15),
-        (raio * 0.95, base_z + altura * 0.36),
-        (raio * 0.74, base_z + altura * 0.58),
-        (raio * 0.40, base_z + altura * 0.82),
-        (0.02, base_z + altura),
-    ]
+    perfil = [(raio * fr, base_z + altura * fz) for fr, fz in perfil]
     n = len(perfil)
     # Casca de dentro mais justa: lábio fino. Em 0,86 a testa do capuz
     # engrossava e o personagem ganhava cara de capacete.
@@ -441,14 +456,10 @@ def construir_capuz(nome, raio, altura, inclinacao, boca, aba, boca_ate):
     bloco_capuz = (verts, faces)
 
     # Aba traseira: a queda de tecido que liga o capuz ao mantelete. Sem ela o
-    # capuz fica "pousado" e a nuca some.
-    perfil_aba = [
-        (raio * 0.74, base_z),
-        (raio * 0.92, base_z - aba * 0.45),
-        (raio * 0.80, base_z - aba),
-    ]
+    # capuz fica "pousado" e a nuca some. Ela DESCE; se abrir, vira prateleira.
+    perfil_aba = [(raio * fr, base_z - altura * 0.70 * fq) for fr, fq in aba]
     traseira = revolver(perfil_aba, segmentos=n_seg, indice_material=0,
-                        pular_frente=200.0 / max(1, boca), pular_ate=len(perfil_aba))
+                        pular_frente=22.5 * boca, pular_ate=len(perfil_aba))
 
     # O rosto se alinha à ABERTURA, não à altura total do capuz. Derivar da
     # altura fazia a carinha subir acima da boca no capuz alto (`spire`) e
@@ -608,79 +619,132 @@ FPS = 24
 
 CLIPES = {
     'idle': dict(loop=True, quadros=[
-        (0, {'spine': {'rot': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
-        (24, {'spine': {'rot': (0.012, 0, 0.01)}, 'hand.L': {'loc': (0, 0, 0.022)}, 'hand.R': {'loc': (0, 0, -0.018)}}),
-        (48, {'spine': {'rot': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (0, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)},
+             'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (26, {'spine': {'rot': (0.014, 0, 0.010)}, 'head': {'rot': (-0.008, 0, -0.006)},
+              'hand.L': {'loc': (0, 0, 0.024)}, 'hand.R': {'loc': (0, 0, -0.016)}}),
+        (52, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)},
+              'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
     ]),
-    # dedo em riste: a mão sobe e trava tremendo
+    # Dedo em riste: recua (antecipação), CRAVA passando do alvo, assenta e
+    # treme de raiva enquanto acusa. O tremor é o que dá vida ao trecho parado.
     'point': dict(loop=False, quadros=[
-        (0, {'chest': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
-        (6, {'chest': {'rot': (0.16, 0, 0)}, 'hand.R': {'loc': (0.06, -0.30, 0.46)}}),
-        (20, {'chest': {'rot': (0.15, 0, 0)}, 'hand.R': {'loc': (0.05, -0.28, 0.44)}}),
-        (30, {'chest': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (0, {'chest': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (3, {'chest': {'rot': (-0.07, 0, 0)}, 'head': {'rot': (-0.05, 0, 0)}, 'hand.R': {'loc': (-0.03, 0.08, -0.05)}}),
+        (7, {'chest': {'rot': (0.21, 0, 0)}, 'head': {'rot': (0.06, 0, 0)}, 'hand.R': {'loc': (0.07, -0.36, 0.52)}}),
+        (10, {'chest': {'rot': (0.15, 0, 0)}, 'head': {'rot': (0.15, 0, 0)}, 'hand.R': {'loc': (0.05, -0.29, 0.45)}}),
+        (14, {'hand.R': {'loc': (0.06, -0.31, 0.47)}}),
+        (17, {'hand.R': {'loc': (0.04, -0.29, 0.45)}}),
+        (20, {'hand.R': {'loc': (0.06, -0.31, 0.47)}}),
+        (26, {'chest': {'rot': (0.13, 0, 0)}, 'head': {'rot': (0.12, 0, 0)}, 'hand.R': {'loc': (0.05, -0.30, 0.46)}}),
+        (36, {'chest': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
     ]),
     'speak': dict(loop=False, quadros=[
-        (0, {'head': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
-        (8, {'head': {'rot': (0.10, 0, 0.05)}, 'hand.R': {'loc': (0.04, -0.20, 0.30)}}),
-        (18, {'head': {'rot': (0.04, 0, -0.04)}, 'hand.R': {'loc': (0.03, -0.18, 0.26)}}),
-        (30, {'head': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (0, {'head': {'rot': (0, 0, 0)}, 'chest': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (5, {'head': {'rot': (0.12, 0, 0.06)}, 'chest': {'rot': (0.05, 0, 0)}, 'hand.R': {'loc': (0.05, -0.24, 0.34)}}),
+        (11, {'head': {'rot': (0.02, 0, -0.07)}, 'chest': {'rot': (0.03, 0, 0)}, 'hand.R': {'loc': (0.03, -0.18, 0.27)}}),
+        (17, {'head': {'rot': (0.10, 0, 0.05)}, 'hand.R': {'loc': (0.05, -0.23, 0.33)}}),
+        (23, {'head': {'rot': (0.03, 0, -0.04)}, 'hand.R': {'loc': (0.03, -0.19, 0.28)}}),
+        (34, {'head': {'rot': (0, 0, 0)}, 'chest': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
     ]),
-    # gargalhada: cabeça pra trás e o corpo inteiro sacode
+    # Gargalhada: o tronco joga pra trás e o CAPUZ chega atrasado — é o
+    # movimento secundário que o procedural tem e que faltava aqui.
     'laugh': dict(loop=False, quadros=[
-        (0, {'chest': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}}),
-        (5, {'chest': {'rot': (-0.20, 0, 0.06)}, 'head': {'rot': (-0.26, 0, 0)}}),
-        (11, {'chest': {'rot': (-0.14, 0, -0.06)}, 'head': {'rot': (-0.20, 0, 0)}}),
-        (17, {'chest': {'rot': (-0.20, 0, 0.06)}, 'head': {'rot': (-0.26, 0, 0)}}),
-        (30, {'chest': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}}),
+        (0, {'chest': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'root': {'loc': (0, 0, 0)}}),
+        (2, {'chest': {'rot': (0.06, 0, 0)}, 'head': {'rot': (0.04, 0, 0)}}),
+        (6, {'chest': {'rot': (-0.26, 0, 0.07)}, 'head': {'rot': (-0.14, 0, 0.04)}, 'root': {'loc': (0, 0, 0.04)}}),
+        (9, {'chest': {'rot': (-0.17, 0, -0.07)}, 'head': {'rot': (-0.32, 0, 0.08)}, 'root': {'loc': (0, 0, 0)}}),
+        (13, {'chest': {'rot': (-0.26, 0, 0.07)}, 'head': {'rot': (-0.20, 0, -0.06)}, 'root': {'loc': (0, 0, 0.035)}}),
+        (16, {'chest': {'rot': (-0.16, 0, -0.06)}, 'head': {'rot': (-0.30, 0, 0.06)}, 'root': {'loc': (0, 0, 0)}}),
+        (20, {'chest': {'rot': (-0.24, 0, 0.06)}, 'head': {'rot': (-0.18, 0, -0.05)}}),
+        (34, {'chest': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'root': {'loc': (0, 0, 0)}}),
     ]),
     'clap': dict(loop=False, quadros=[
-        (0, {'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
-        (5, {'hand.L': {'loc': (0.34, -0.10, 0.34)}, 'hand.R': {'loc': (-0.34, -0.10, 0.34)}}),
-        (9, {'hand.L': {'loc': (0.14, -0.10, 0.34)}, 'hand.R': {'loc': (-0.14, -0.10, 0.34)}}),
-        (13, {'hand.L': {'loc': (0.34, -0.10, 0.34)}, 'hand.R': {'loc': (-0.34, -0.10, 0.34)}}),
-        (17, {'hand.L': {'loc': (0.14, -0.10, 0.34)}, 'hand.R': {'loc': (-0.14, -0.10, 0.34)}}),
-        (28, {'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (0, {'chest': {'rot': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (3, {'hand.L': {'loc': (-0.05, 0, 0.06)}, 'hand.R': {'loc': (0.05, 0, 0.06)}}),
+        (7, {'chest': {'rot': (0.05, 0, 0)}, 'hand.L': {'loc': (0.36, -0.12, 0.36)}, 'hand.R': {'loc': (-0.36, -0.12, 0.36)}}),
+        (10, {'chest': {'rot': (0.02, 0, 0)}, 'hand.L': {'loc': (0.13, -0.12, 0.36)}, 'hand.R': {'loc': (-0.13, -0.12, 0.36)}}),
+        (14, {'hand.L': {'loc': (0.33, -0.12, 0.36)}, 'hand.R': {'loc': (-0.33, -0.12, 0.36)}}),
+        (17, {'chest': {'rot': (0.04, 0, 0)}, 'hand.L': {'loc': (0.13, -0.12, 0.36)}, 'hand.R': {'loc': (-0.13, -0.12, 0.36)}}),
+        (21, {'hand.L': {'loc': (0.30, -0.12, 0.34)}, 'hand.R': {'loc': (-0.30, -0.12, 0.34)}}),
+        (24, {'hand.L': {'loc': (0.14, -0.12, 0.34)}, 'hand.R': {'loc': (-0.14, -0.12, 0.34)}}),
+        (34, {'chest': {'rot': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
     ]),
-    # mãos pro alto e pulinhos
+    # Festa: agacha antes de saltar, e o corpo cai antes das mãos descerem.
     'celebrate': dict(loop=False, quadros=[
-        (0, {'root': {'loc': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
-        (6, {'root': {'loc': (0, 0, 0.16)}, 'hand.L': {'loc': (-0.10, 0.20, 0.92)}, 'hand.R': {'loc': (0.10, 0.20, 0.92)}}),
-        (12, {'root': {'loc': (0, 0, 0)}, 'hand.L': {'loc': (-0.06, 0.20, 0.86)}, 'hand.R': {'loc': (0.06, 0.20, 0.86)}}),
-        (18, {'root': {'loc': (0, 0, 0.14)}, 'hand.L': {'loc': (-0.10, 0.20, 0.92)}, 'hand.R': {'loc': (0.10, 0.20, 0.92)}}),
-        (34, {'root': {'loc': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (0, {'root': {'loc': (0, 0, 0)}, 'chest': {'rot': (0, 0, 0)},
+             'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (3, {'root': {'loc': (0, 0, -0.07)}, 'chest': {'rot': (0.10, 0, 0)},
+             'hand.L': {'loc': (0, 0, -0.08)}, 'hand.R': {'loc': (0, 0, -0.08)}}),
+        (8, {'root': {'loc': (0, 0, 0.20)}, 'chest': {'rot': (-0.10, 0, 0)},
+             'hand.L': {'loc': (-0.12, 0.22, 0.96)}, 'hand.R': {'loc': (0.12, 0.22, 0.96)}}),
+        (12, {'root': {'loc': (0, 0, 0.02)}, 'chest': {'rot': (0.05, 0, 0.04)},
+              'hand.L': {'loc': (-0.05, 0.20, 0.86)}, 'hand.R': {'loc': (0.05, 0.20, 0.86)}}),
+        (17, {'root': {'loc': (0, 0, 0.17)}, 'chest': {'rot': (-0.07, 0, -0.04)},
+              'hand.L': {'loc': (-0.12, 0.22, 0.94)}, 'hand.R': {'loc': (0.12, 0.22, 0.94)}}),
+        (22, {'root': {'loc': (0, 0, -0.03)}, 'chest': {'rot': (0.07, 0, 0)},
+              'hand.L': {'loc': (-0.06, 0.20, 0.80)}, 'hand.R': {'loc': (0.06, 0.20, 0.80)}}),
+        (38, {'root': {'loc': (0, 0, 0)}, 'chest': {'rot': (0, 0, 0)},
+              'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
     ]),
     'facepalm': dict(loop=False, quadros=[
-        (0, {'head': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
-        (10, {'head': {'rot': (0.20, 0, 0)}, 'hand.R': {'loc': (-0.34, 0.24, 0.66)}}),
-        (24, {'head': {'rot': (0.18, 0, 0.08)}, 'hand.R': {'loc': (-0.34, 0.24, 0.66)}}),
-        (36, {'head': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (0, {'head': {'rot': (0, 0, 0)}, 'chest': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (4, {'head': {'rot': (-0.06, 0, 0)}, 'hand.R': {'loc': (-0.06, 0.04, 0.10)}}),
+        (11, {'head': {'rot': (0.24, 0, 0)}, 'chest': {'rot': (0.09, 0, 0)}, 'hand.R': {'loc': (-0.36, 0.26, 0.70)}}),
+        (18, {'head': {'rot': (0.20, 0, 0.09)}, 'hand.R': {'loc': (-0.35, 0.25, 0.68)}}),
+        (25, {'head': {'rot': (0.22, 0, -0.08)}, 'hand.R': {'loc': (-0.36, 0.26, 0.69)}}),
+        (40, {'head': {'rot': (0, 0, 0)}, 'chest': {'rot': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
     ]),
-    # recuo seco: o capuz chega atrasado, como no procedural
+    # Recuo seco: sem antecipação (levou um golpe), mas o capuz chega atrasado
+    # e o corpo oscila até parar.
     'hit': dict(loop=False, quadros=[
-        (0, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}}),
-        (3, {'spine': {'rot': (-0.24, 0, 0.10)}, 'head': {'rot': (-0.30, 0, 0.14)}}),
-        (9, {'spine': {'rot': (0.06, 0, -0.05)}, 'head': {'rot': (0.10, 0, -0.06)}}),
-        (18, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}}),
+        (0, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'root': {'loc': (0, 0, 0)}}),
+        (2, {'spine': {'rot': (-0.28, 0, 0.12)}, 'head': {'rot': (-0.16, 0, 0.06)}, 'root': {'loc': (0, 0.06, 0.03)}}),
+        (5, {'spine': {'rot': (-0.20, 0, 0.08)}, 'head': {'rot': (-0.36, 0, 0.16)}, 'root': {'loc': (0, 0.04, 0)}}),
+        (9, {'spine': {'rot': (0.09, 0, -0.06)}, 'head': {'rot': (-0.05, 0, -0.09)}, 'root': {'loc': (0, -0.01, 0)}}),
+        (14, {'spine': {'rot': (-0.04, 0, 0.03)}, 'head': {'rot': (0.06, 0, 0.04)}}),
+        (22, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'root': {'loc': (0, 0, 0)}}),
     ]),
+    # Tilt: recua, abre os braços e MARTELA a mesa duas vezes, tremendo.
     'rage': dict(loop=False, quadros=[
-        (0, {'spine': {'rot': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
-        (4, {'spine': {'rot': (0.16, 0, 0.09)}, 'hand.L': {'loc': (-0.24, 0, 0.34)}, 'hand.R': {'loc': (0.24, 0, 0.34)}}),
-        (8, {'spine': {'rot': (0.16, 0, -0.09)}, 'hand.L': {'loc': (-0.24, 0, -0.10)}, 'hand.R': {'loc': (0.24, 0, -0.10)}}),
-        (12, {'spine': {'rot': (0.16, 0, 0.09)}, 'hand.L': {'loc': (-0.24, 0, 0.34)}, 'hand.R': {'loc': (0.24, 0, 0.34)}}),
-        (16, {'spine': {'rot': (0.16, 0, -0.09)}, 'hand.L': {'loc': (-0.24, 0, -0.10)}, 'hand.R': {'loc': (0.24, 0, -0.10)}}),
-        (32, {'spine': {'rot': (0, 0, 0)}, 'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (0, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)},
+             'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (3, {'spine': {'rot': (-0.10, 0, 0)}, 'head': {'rot': (-0.08, 0, 0)},
+             'hand.L': {'loc': (-0.10, 0, 0.14)}, 'hand.R': {'loc': (0.10, 0, 0.14)}}),
+        (7, {'spine': {'rot': (0.20, 0, 0.10)}, 'head': {'rot': (0.10, 0, 0.06)},
+             'hand.L': {'loc': (-0.30, 0, 0.42)}, 'hand.R': {'loc': (0.30, 0, 0.42)}}),
+        (10, {'spine': {'rot': (0.24, 0, -0.04)}, 'head': {'rot': (0.18, 0, 0.10)},
+              'hand.L': {'loc': (-0.26, 0, -0.14)}, 'hand.R': {'loc': (0.26, 0, -0.14)}}),
+        (13, {'spine': {'rot': (0.16, 0, 0.09)}, 'head': {'rot': (0.20, 0, -0.06)},
+              'hand.L': {'loc': (-0.30, 0, 0.36)}, 'hand.R': {'loc': (0.30, 0, 0.36)}}),
+        (16, {'spine': {'rot': (0.24, 0, -0.08)}, 'head': {'rot': (0.14, 0, 0.08)},
+              'hand.L': {'loc': (-0.26, 0, -0.14)}, 'hand.R': {'loc': (0.26, 0, -0.14)}}),
+        (20, {'spine': {'rot': (0.18, 0, 0.06)}, 'head': {'rot': (0.16, 0, -0.05)},
+              'hand.L': {'loc': (-0.24, 0, 0.10)}, 'hand.R': {'loc': (0.24, 0, 0.10)}}),
+        (24, {'spine': {'rot': (0.20, 0, -0.05)}, 'head': {'rot': (0.12, 0, 0.05)}}),
+        (38, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)},
+              'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
     ]),
     'sleep': dict(loop=True, quadros=[
-        (0, {'spine': {'rot': (0.12, 0, 0)}, 'head': {'rot': (0.22, 0, 0.06)}}),
-        (36, {'spine': {'rot': (0.15, 0, 0)}, 'head': {'rot': (0.28, 0, 0.06)}}),
-        (72, {'spine': {'rot': (0.12, 0, 0)}, 'head': {'rot': (0.22, 0, 0.06)}}),
+        (0, {'spine': {'rot': (0.13, 0, 0)}, 'head': {'rot': (0.24, 0, 0.06)}, 'root': {'loc': (0, 0, -0.03)}}),
+        (30, {'spine': {'rot': (0.16, 0, 0.01)}, 'head': {'rot': (0.31, 0, 0.07)}, 'root': {'loc': (0, 0, -0.05)}}),
+        (44, {'spine': {'rot': (0.15, 0, 0.01)}, 'head': {'rot': (0.20, 0, 0.05)}, 'root': {'loc': (0, 0, -0.02)}}),
+        (80, {'spine': {'rot': (0.13, 0, 0)}, 'head': {'rot': (0.24, 0, 0.06)}, 'root': {'loc': (0, 0, -0.03)}}),
     ]),
-    # terminal: desaba sobre a mesa e NÃO volta — o último quadro é a pose final
+    # Terminal: uma inspirada, o joelho cede, o corpo desaba e o capuz bate na
+    # mesa por último. O quadro final É a pose de defunto — não volta.
     'collapse': dict(loop=False, quadros=[
-        (0, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'root': {'loc': (0, 0, 0)}}),
-        (5, {'spine': {'rot': (-0.14, 0, 0)}, 'head': {'rot': (-0.18, 0, 0)}, 'root': {'loc': (0, 0, 0.04)}}),
-        (22, {'spine': {'rot': (0.92, 0, 0.22)}, 'head': {'rot': (0.60, 0, 0.10)}, 'root': {'loc': (0, -0.10, -0.30)}}),
-        (28, {'spine': {'rot': (0.88, 0, 0.24)}, 'head': {'rot': (0.64, 0, 0.12)}, 'root': {'loc': (0, -0.10, -0.28)}}),
+        (0, {'spine': {'rot': (0, 0, 0)}, 'head': {'rot': (0, 0, 0)}, 'root': {'loc': (0, 0, 0)},
+             'hand.L': {'loc': (0, 0, 0)}, 'hand.R': {'loc': (0, 0, 0)}}),
+        (4, {'spine': {'rot': (-0.16, 0, 0)}, 'head': {'rot': (-0.12, 0, 0)}, 'root': {'loc': (0, 0, 0.05)}}),
+        (8, {'spine': {'rot': (-0.10, 0, 0.04)}, 'head': {'rot': (-0.20, 0, 0.03)}, 'root': {'loc': (0, 0, 0.02)}}),
+        (14, {'spine': {'rot': (0.30, 0, 0.10)}, 'head': {'rot': (0.05, 0, 0.04)}, 'root': {'loc': (0, -0.03, -0.12)},
+              'hand.L': {'loc': (0, -0.06, -0.10)}, 'hand.R': {'loc': (0, -0.06, -0.10)}}),
+        (22, {'spine': {'rot': (0.94, 0, 0.22)}, 'head': {'rot': (0.42, 0, 0.08)}, 'root': {'loc': (0, -0.10, -0.32)},
+              'hand.L': {'loc': (-0.06, -0.16, -0.26)}, 'hand.R': {'loc': (0.06, -0.16, -0.26)}}),
+        (26, {'spine': {'rot': (0.86, 0, 0.25)}, 'head': {'rot': (0.66, 0, 0.13)}, 'root': {'loc': (0, -0.09, -0.27)}}),
+        (32, {'spine': {'rot': (0.89, 0, 0.24)}, 'head': {'rot': (0.60, 0, 0.11)}, 'root': {'loc': (0, -0.10, -0.29)},
+              'hand.L': {'loc': (-0.07, -0.18, -0.28)}, 'hand.R': {'loc': (0.07, -0.18, -0.28)}}),
     ]),
 }
 

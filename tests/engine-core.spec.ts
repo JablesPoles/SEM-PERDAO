@@ -55,6 +55,9 @@ const GLTF_MANIFEST: ActorAssetManifest = {
       values: { blood: '#8f201b', ash: '#625d63' },
     },
   },
+  textureSlots: {
+    face: { material: 'Rosto', channel: 'emissive-mask' },
+  },
   lods: [
     { id: 'lod-1', uri: '/actors/test/model-lod1.glb', minDistance: 7, maxTriangles: 8_000 },
     { id: 'lod-2', uri: '/actors/test/model-lod2.glb', minDistance: 14, maxTriangles: 3_000 },
@@ -278,6 +281,34 @@ test('slot não pode ser peça e cor ao mesmo tempo, e cor exige tabela válida'
   expect(legado.valid).toBe(true);
   expect(legado.manifest?.variants).toEqual({});
   expect(legado.manifest?.palette).toEqual({});
+});
+
+test('expressão pode ser pixel: textureSlots é validado como a paleta', () => {
+  const base = { ...GLTF_MANIFEST } as unknown as Record<string, unknown>;
+  // Nem todo personagem expressa por morph. O cultista tem a carinha desenhada
+  // num plano; sem este slot o ator glTF fica de cara congelada enquanto o
+  // procedural reage — e é a carinha que dá identidade a ele.
+  expect(auditActorManifest(base).manifest?.textureSlots.face).toEqual({
+    material: 'Rosto',
+    channel: 'emissive-mask',
+  });
+
+  const canalTorto = auditActorManifest({
+    ...base,
+    textureSlots: { face: { material: 'Rosto', channel: 'normal-map' } },
+  });
+  expect(canalTorto.valid).toBe(false);
+  expect(canalTorto.issues.some((entrada) => entrada.code === 'texture.channel')).toBe(true);
+
+  const semMaterial = auditActorManifest({ ...base, textureSlots: { face: {} } });
+  expect(semMaterial.issues.some((entrada) => entrada.code === 'texture.invalid')).toBe(true);
+
+  // `base-color` é o default e um manifesto antigo, sem o campo, segue válido.
+  const semCanal = auditActorManifest({ ...base, textureSlots: { crest: { material: 'X' } } });
+  expect(semCanal.manifest?.textureSlots.crest.channel).toBe('base-color');
+  const legado = { ...base };
+  delete legado.textureSlots;
+  expect(auditActorManifest(legado).manifest?.textureSlots).toEqual({});
 });
 
 test('manifesto audita clips, expressões, LODs e orçamento observado', () => {

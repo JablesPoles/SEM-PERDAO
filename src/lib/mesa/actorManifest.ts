@@ -63,6 +63,11 @@ export interface ActorAssetManifest {
   variants: Record<string, Record<string, string[]>>;
   /** Slots resolvidos por cor de material em vez de geometria. */
   palette: Record<string, ActorPaletteBinding>;
+  /**
+   * Materiais que recebem textura desenhada pelo jogo em tempo real. É como o
+   * rosto do cultista funciona: expressão ali é pixel, não morph target.
+   */
+  textureSlots: Record<string, ActorTextureSlotBinding>;
   lods: ActorLodDefinition[];
   budget: ActorAssetBudget;
   preload: 'shell' | 'lobby' | 'game' | 'on-demand';
@@ -71,6 +76,19 @@ export interface ActorAssetManifest {
 
 export const ACTOR_PALETTE_PROPERTIES = ['baseColorFactor', 'emissiveFactor'] as const;
 export type ActorPaletteProperty = (typeof ACTOR_PALETTE_PROPERTIES)[number];
+
+export const ACTOR_TEXTURE_CHANNELS = ['emissive-mask', 'base-color'] as const;
+export type ActorTextureChannel = (typeof ACTOR_TEXTURE_CHANNELS)[number];
+
+export interface ActorTextureSlotBinding {
+  material: string;
+  /**
+   * `emissive-mask` acende a textura e recorta pelo alpha — é o rosto de LED
+   * no vazio do capuz, que precisa sobreviver ao blackout do ato final.
+   * `base-color` apenas substitui a cor difusa.
+   */
+  channel: ActorTextureChannel;
+}
 
 export interface ActorPaletteBinding {
   material: string;
@@ -247,6 +265,32 @@ function parsePalette(value: unknown, issues: ActorManifestIssue[]): ActorAssetM
   return result;
 }
 
+function parseTextureSlots(
+  value: unknown,
+  issues: ActorManifestIssue[]
+): ActorAssetManifest['textureSlots'] {
+  if (!isRecord(value)) return {};
+  const result: ActorAssetManifest['textureSlots'] = {};
+  for (const [slot, binding] of Object.entries(value)) {
+    if (!safeName(slot, 40)) {
+      issue(issues, 'error', 'texture.slot-invalid', `textureSlots.${slot}`, 'Nome de slot inválido.');
+      continue;
+    }
+    if (!isRecord(binding) || !safeName(binding.material, 120)) {
+      issue(issues, 'error', 'texture.invalid', `textureSlots.${slot}`, 'Informe o material a pintar.');
+      continue;
+    }
+    const channel = binding.channel ?? 'base-color';
+    if (!(ACTOR_TEXTURE_CHANNELS as readonly unknown[]).includes(channel)) {
+      issue(issues, 'error', 'texture.channel', `textureSlots.${slot}.channel`,
+        `Use ${ACTOR_TEXTURE_CHANNELS.join(' ou ')}.`);
+      continue;
+    }
+    result[slot] = { material: binding.material as string, channel: channel as ActorTextureChannel };
+  }
+  return result;
+}
+
 function parseAnchors(value: unknown, issues: ActorManifestIssue[]): ActorAssetManifest['anchors'] {
   if (!isRecord(value)) return {};
   const result: ActorAssetManifest['anchors'] = {};
@@ -387,6 +431,7 @@ export function auditActorManifest(value: unknown): ActorManifestAudit {
   const anchors = parseAnchors(value.anchors, issues);
   const variants = parseVariants(value.variants, issues);
   const palette = parsePalette(value.palette, issues);
+  const textureSlots = parseTextureSlots(value.textureSlots, issues);
   for (const slot of Object.keys(palette)) {
     if (variants[slot]) {
       issue(issues, 'error', 'slot.duplicado', `palette.${slot}`, 'Slot não pode ser peça e cor ao mesmo tempo.');
@@ -436,6 +481,7 @@ export function auditActorManifest(value: unknown): ActorManifestAudit {
     anchors,
     variants,
     palette,
+    textureSlots,
     lods,
     budget,
     preload: preload as ActorAssetManifest['preload'],

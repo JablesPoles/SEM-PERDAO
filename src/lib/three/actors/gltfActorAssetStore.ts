@@ -8,6 +8,7 @@ import {
   normalizeActorIntentCommand,
   type ActorAnchorId,
   type ActorAppearance,
+  type ActorTexturePainter,
   type ActorExpression,
   type ActorFrame,
   type ActorIntent,
@@ -53,6 +54,11 @@ export interface GltfActorInstanceOptions {
   distance?: number;
   castShadow?: boolean;
   receiveShadow?: boolean;
+  /**
+   * Desenha as texturas dos `textureSlots` do manifesto. Sem isto o ator fica
+   * com a textura embutida no asset — no cultista, uma cara congelada.
+   */
+  paintTexture?: ActorTexturePainter;
 }
 
 export interface GltfActorAssetStoreOptions {
@@ -238,6 +244,10 @@ export class GltfTableActor implements TableActor<THREE.Group> {
   private morphTransition: MorphTransition | null = null;
   /** Materiais clonados só pra este ator; o template continua compartilhado. */
   private readonly materiaisProprios = new Set<THREE.Material>();
+  /** Última aparência aplicada — o pintor de textura depende dela. */
+  private aparencia: ActorAppearance = {};
+  private readonly texturasProprias = new Set<THREE.Texture>();
+  private readonly pintarTextura: ActorTexturePainter | null;
   private disposed = false;
 
   constructor(
@@ -248,6 +258,7 @@ export class GltfTableActor implements TableActor<THREE.Group> {
   ) {
     this.actorId = options.actorId;
     this.release = release;
+    this.pintarTextura = options.paintTexture ?? null;
     const scene = cloneSkeleton(template.scene);
     this.model = manifest.rootNode ? scene.getObjectByName(manifest.rootNode) ?? scene : scene;
     if (manifest.rootNode && this.model === scene && scene.name !== manifest.rootNode) {
@@ -327,6 +338,7 @@ export class GltfTableActor implements TableActor<THREE.Group> {
    */
   setAppearance(appearance: ActorAppearance): void {
     if (this.disposed) return;
+    this.aparencia = { ...this.aparencia, ...appearance };
     for (const [slot, opcao] of Object.entries(appearance) as [string, string][]) {
       const variante = this.manifest.variants[slot];
       if (variante) {
@@ -344,6 +356,78 @@ export class GltfTableActor implements TableActor<THREE.Group> {
       const cor = tinta?.values[opcao];
       if (tinta && cor) this.pintar(tinta.material, tinta.property, cor);
     }
+    this.repintarTexturas();
+  }
+
+  /**
+   * Redesenha cada `textureSlot` a partir da aparência e da expressão atuais.
+   *
+   * É aqui que a carinha do cultista acompanha o jogo: a engine não sabe
+   * desenhar um rosto, mas sabe qual material o recebe e quando ele mudou.
+   */
+  private repintarTexturas(): void {
+    if (!this.pintarTextura) return;
+    for (const [slot, ligacao] of Object.entries(this.manifest.textureSlots)) {
+      const canvas = this.pintarTextura({
+        slot,
+        expression: this.currentExpression,
+        appearance: this.aparencia,
+      });
+      if (!canvas) continue;
+      const textura = new THREE.CanvasTexture(canvas);
+      textura.colorSpace = THREE.SRGBColorSpace;
+      // Pixel duro: filtro linear borraria os olhos, que têm poucos pixels e
+      // são a leitura inteira do personagem a 160 px na tela.
+      textura.magFilter = THREE.NearestFilter;
+      textura.minFilter = THREE.NearestFilter;
+      textura.generateMipmaps = false;
+      textura.flipY = false;
+      this.aplicarTextura(ligacao.material, ligacao.channel, textura);
+    }
+  }
+
+  private aplicarTextura(
+    nomeMaterial: string,
+    canal: 'emissive-mask' | 'base-color',
+    textura: THREE.Texture
+  ): void {
+    let usada = false;
+    this.model.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const lista = Array.isArray(object.material) ? object.material : [object.material];
+      lista.forEach((material, indice) => {
+        if (material?.name !== nomeMaterial) return;
+        let alvo = material as THREE.MeshStandardMaterial;
+        if (!this.materiaisProprios.has(material)) {
+          alvo = material.clone() as THREE.MeshStandardMaterial;
+          this.materiaisProprios.add(alvo);
+          if (Array.isArray(object.material)) object.material[indice] = alvo;
+          else object.material = alvo;
+        }
+        // A textura anterior deste ator morre aqui; a do template nunca é
+        // tocada, senão a mesa inteira herdaria o rosto de um réu só.
+        for (const antiga of [alvo.map, alvo.emissiveMap, alvo.alphaMap]) {
+          if (antiga && this.texturasProprias.has(antiga)) {
+            this.texturasProprias.delete(antiga);
+            antiga.dispose();
+          }
+        }
+        if (canal === 'emissive-mask') {
+          alvo.map = textura;
+          alvo.emissiveMap = textura;
+          alvo.alphaMap = textura;
+          alvo.transparent = true;
+          alvo.alphaTest = 0.5;
+          if (alvo.emissive) alvo.emissive.setRGB(1, 1, 1);
+        } else {
+          alvo.map = textura;
+        }
+        alvo.needsUpdate = true;
+        usada = true;
+      });
+    });
+    if (usada) this.texturasProprias.add(textura);
+    else textura.dispose();
   }
 
   /**
@@ -378,6 +462,9 @@ export class GltfTableActor implements TableActor<THREE.Group> {
     const binding = this.manifest.expressions?.[expression]
       ?? (expression === 'neutral' ? { morphTargets: {}, fadeMs: 120 } : null);
     this.currentExpression = expression;
+    // Expressão pode ser morph OU pixel. O cultista não tem morph nenhum: a
+    // cara dele muda por textura, e sem repintar aqui ele ficaria de pedra.
+    this.repintarTexturas();
     if (!binding) return;
     const meshes: MorphTransition['meshes'] = [];
     this.root.traverse((object) => {
@@ -449,6 +536,8 @@ export class GltfTableActor implements TableActor<THREE.Group> {
     // Só o que ESTE ator clonou; o material do template segue vivo pros outros.
     for (const material of this.materiaisProprios) material.dispose();
     this.materiaisProprios.clear();
+    for (const textura of this.texturasProprias) textura.dispose();
+    this.texturasProprias.clear();
     this.release();
   }
 }

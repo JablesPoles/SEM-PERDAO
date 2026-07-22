@@ -252,7 +252,15 @@ function criarAroCapuz(estilo: CultistHood, material: THREE.Material): THREE.Mes
 }
 
 /** Carinha brilhante 64x48 — olhos e boca sobre fundo transparente. */
-function drawRosto(exp: Expressao, cor: string, variante: CultistFace): THREE.CanvasTexture {
+/**
+ * Desenha a carinha num canvas 64×48 — dois olhos e uma boca acesos.
+ *
+ * Exportada porque o ator glTF precisa da MESMA cara: lá o rosto é um plano
+ * com material emissivo, e a expressão chega como textura injetada pelo jogo.
+ * Sem isso o boneco de Blender fica com um rosto congelado enquanto o
+ * procedural reage — e é a carinha que dá identidade ao cultista.
+ */
+export function pintarRosto(exp: Expressao, cor: string, variante: CultistFace): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = 64;
   c.height = 48;
@@ -303,7 +311,11 @@ function drawRosto(exp: Expressao, cor: string, variante: CultistFace): THREE.Ca
     x.fillRect(13, 20, 4, 9);
     x.fillRect(47, 20, 4, 13);
   }
-  return texCanvas(c);
+  return c;
+}
+
+function drawRosto(exp: Expressao, cor: string, variante: CultistFace): THREE.CanvasTexture {
+  return texCanvas(pintarRosto(exp, cor, variante));
 }
 
 /** Crachá de escritório: credencial barata de um tribunal clandestino. */

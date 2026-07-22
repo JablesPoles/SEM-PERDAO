@@ -31,6 +31,7 @@ import type { CultistAppearance } from '@/lib/types';
 import type { FrameBenchmarkResult, FrameBenchmarkState } from './frameBenchmark';
 import type { FramingReport } from './framing';
 import { CHARACTER_ACTOR_CATALOG } from './actors/characterActorCatalog';
+import { createCultistFacePainter } from './actors/cultistFacePainter';
 import { PROCEDURAL_CULTIST_MANIFEST } from './actors/cultistManifest';
 import { GltfActorAssetStore } from './actors/gltfActorAssetStore';
 import { ProceduralCultistActor } from './actors/proceduralCultistActor';
@@ -331,6 +332,7 @@ export class CharacterLabScene {
       distance: 4,
       castShadow: true,
       receiveShadow: false,
+      paintTexture: createCultistFacePainter(),
     });
     // Um glTF nasce com TODAS as variantes visíveis. Sem aplicar a aparência
     // aqui, o ator entra em cena com os três capuzes empilhados na cabeça.

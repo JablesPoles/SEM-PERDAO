@@ -45,6 +45,23 @@ export const ACTOR_ANCHORS = [
  */
 export type ActorAppearance = Readonly<Record<string, string>>;
 
+/**
+ * Pintor de textura de slot: o jogo desenha, a engine aplica.
+ *
+ * Nem toda expressão é morph target. O cultista tem o rosto desenhado num
+ * plano dentro do capuz — dois olhos e uma boca acesos —, e essa arte é
+ * específica do jogo. A engine não pode saber desenhar um cultista, mas
+ * precisa saber ONDE colar o resultado; o manifesto declara o material e este
+ * callback entrega o pixel.
+ *
+ * Devolver `null` deixa a textura do asset intacta.
+ */
+export type ActorTexturePainter = (pedido: {
+  readonly slot: string;
+  readonly expression: ActorExpression;
+  readonly appearance: ActorAppearance;
+}) => HTMLCanvasElement | null;
+
 export type ActorIntent = (typeof ACTOR_INTENTS)[number];
 export type ActorExpression = (typeof ACTOR_EXPRESSIONS)[number];
 export type ActorAnchorId = (typeof ACTOR_ANCHORS)[number];
