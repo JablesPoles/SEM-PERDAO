@@ -24,7 +24,7 @@ import bpy
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mesa_kit import (  # noqa: E402
     caixa, contar_triangulos, desdobrar_uv, exportar_glb, girar_x, girar_z,
-    juntar, limpar_cena, material, montar_estudio, mover, objeto_de,
+    extrudar, juntar, limpar_cena, material, montar_estudio, mover, objeto_de,
     renderizar, revolver, sombrear_plano, tubo,
 )
 
@@ -119,12 +119,32 @@ def cadeira():
 
 
 def trono():
-    """A cadeira do juiz: mais alta, encosto em ogiva e detalhe vermelho."""
+    """
+    A cadeira do juiz: encosto alto terminando em ogiva, com estofado vermelho.
+
+    A primeira versão revolvia uma "coroa" em torno do eixo do assento — e o
+    encosto fica em y=+0,30, então a coroa nascia no ar, à frente das costas,
+    como um cogumelo. Aqui a ogiva é construída NO PLANO do encosto.
+    """
     base = cadeira_bloco()
-    coroa = revolver([(0.30, 1.40), (0.26, 1.50), (0.16, 1.58), (0.0, 1.62)],
-                     segmentos=8, indice_material=2)
-    costas = caixa(0.62, 0.07, 0.86, (0, 0.30, 1.00))
-    return objeto_de('PropThrone', *juntar(base, costas, coroa),
+    y_costas = 0.30
+    costas = caixa(0.66, 0.08, 0.94, (0, y_costas, 1.03))
+    # ogiva: dois degraus estreitando até o bico, no mesmo plano do encosto
+    remate = juntar(
+        caixa(0.50, 0.08, 0.14, (0, y_costas, 1.57)),
+        caixa(0.30, 0.08, 0.13, (0, y_costas, 1.69)),
+        caixa(0.13, 0.08, 0.12, (0, y_costas, 1.79)),
+    )
+    # estofado: painel vermelho embutido na frente do encosto
+    estofado = caixa(0.50, 0.03, 0.70, (0, y_costas - 0.055, 1.02), indice_material=2)
+    # braços, que é o que separa trono de cadeira à distância
+    bracos = [
+        juntar(
+            caixa(0.09, 0.54, 0.09, (x, 0.02, 0.78)),
+            caixa(0.09, 0.09, 0.30, (x, -0.22, 0.63)),
+        ) for x in (-0.36, 0.36)
+    ]
+    return objeto_de('PropThrone', *juntar(base, costas, remate, estofado, *bracos),
                      mats('Madeira', 'MadeiraClara', 'Vermelho'))
 
 
@@ -151,36 +171,56 @@ def sapato():
     """
     Arremesso 2: o clássico do plenário.
 
-    Voa por menos de um segundo, então a leitura tem que ser instantânea: perfil
-    de bota com cano, peito do pé descendo até o bico e salto atrás. A primeira
-    versão empilhava um cilindro sobre uma laje e virava um amontoado — silhueta
-    ganha de detalhe quando o objeto está em movimento.
+    Voa por menos de um segundo, então tudo depende da SILHUETA lateral —
+    e silhueta inclinada se faz extrudando um contorno, não empilhando caixas.
+    As duas versões anteriores eram degraus e liam como um bloco qualquer.
     """
-    sola = caixa(0.52, 0.20, 0.045, (0.02, 0, -0.10), indice_material=1)
-    salto = caixa(0.13, 0.18, 0.09, (-0.19, 0, -0.165), indice_material=1)
-    # cano: a parte alta atrás, que é o que diferencia sapato de tijolo
-    cano = caixa(0.19, 0.19, 0.24, (-0.15, 0, 0.04))
-    # peito do pé descendo em rampa até o bico
-    meio = caixa(0.16, 0.19, 0.15, (0.01, 0, -0.015))
-    frente = caixa(0.15, 0.18, 0.10, (0.15, 0, -0.045))
-    bico = caixa(0.10, 0.16, 0.07, (0.25, 0, -0.055))
-    return objeto_de('PropShoe', *juntar(sola, salto, cano, meio, frente, bico),
+    # contorno lateral em (x, z), anti-horário: salto, sola, bico, peito, cano
+    contorno = [
+        (-0.235, -0.135), (0.300, -0.135), (0.320, -0.088),   # sola até o bico
+        (0.300, -0.030), (0.215, 0.010), (0.090, 0.052),      # rampa do peito
+        (-0.010, 0.105), (-0.055, 0.205), (-0.235, 0.215),    # subida do cano
+        (-0.250, 0.060), (-0.245, -0.060),                    # traseira e salto
+    ]
+    corpo = extrudar(contorno, 0.185)
+    # sola e salto em cor separada: é o contraste que dá leitura de calçado
+    sola = extrudar([
+        (-0.250, -0.175), (0.320, -0.140), (0.322, -0.086),
+        (0.298, -0.086), (-0.250, -0.120),
+    ], 0.195, indice_material=1)
+    cadarco = caixa(0.16, 0.10, 0.022, (-0.03, 0, 0.115), indice_material=1)
+    return objeto_de('PropShoe', *juntar(corpo, sola, cadarco),
                      mats('Tinta', 'MadeiraClara'))
 
 
 def rosa():
-    """Arremesso 3: o único elogio da mesa. Pétalas em camadas e uma folha."""
-    haste = tubo((0.30, 0, 0), (-0.20, 0, 0.02), 0.016, 0.020, 5, indice_material=1)
-    calice = revolver([(0.0, -0.06), (0.06, -0.02), (0.05, 0.03), (0.0, 0.04)],
+    """
+    Arremesso 3: o único elogio da mesa.
+
+    A flor é um BOTÃO fechado, não um cone: pétalas em duas camadas que se
+    fecham para cima. A primeira versão empilhava anéis abertos e virava um
+    chapéu chinês, e a folha era um retângulo em pé como bandeirinha.
+    """
+    haste = tubo((0.34, 0, -0.01), (-0.16, 0, 0.02), 0.014, 0.018, 5, indice_material=1)
+    # cálice: a base verde que segura o botão
+    calice = revolver([(0.0, -0.075), (0.045, -0.05), (0.062, 0.0), (0.03, 0.03)],
                       segmentos=6, indice_material=1)
-    petalas = []
-    for camada, (raio, altura, giro) in enumerate([(0.115, 0.02, 0.0), (0.085, 0.07, 0.4)]):
-        anel = revolver([(0.02, 0.0), (raio, altura * 0.6), (raio * 0.7, altura)],
-                        segmentos=6)
-        petalas.append(girar_z(anel, giro))
-    miolo = revolver([(0.0, 0.02), (0.035, 0.05), (0.0, 0.10)], segmentos=5)
-    flor = mover(juntar(calice, *petalas, miolo), (-0.24, 0, 0.02))
-    folha = caixa(0.13, 0.02, 0.07, (0.02, 0.03, 0.05), indice_material=1)
+    # botão: barriga no meio e fechamento no topo — silhueta de rosa fechada
+    botao = revolver([
+        (0.02, -0.01), (0.075, 0.03), (0.098, 0.09),
+        (0.088, 0.15), (0.05, 0.19), (0.0, 0.21),
+    ], segmentos=7)
+    # segunda camada girada: as pétalas de fora, ligeiramente abertas
+    externa = girar_z(revolver([
+        (0.05, 0.0), (0.112, 0.045), (0.10, 0.10), (0.055, 0.14),
+    ], segmentos=7), math.radians(25))
+    flor = mover(juntar(calice, botao, externa), (-0.20, 0, 0.03))
+    # folha deitada ao longo da haste, com bico — não um retângulo vertical
+    folha = juntar(
+        caixa(0.10, 0.075, 0.012, (0.06, 0.055, 0.015)),
+        caixa(0.05, 0.035, 0.012, (0.13, 0.075, 0.015)),
+    )
+    folha = ([(x, y, z) for x, y, z in folha[0]], [(f, 1) for f, _ in folha[1]])
     return objeto_de('PropRose', *juntar(haste, flor, folha), mats('Vermelho', 'Verde'))
 
 

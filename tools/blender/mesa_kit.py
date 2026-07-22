@@ -179,6 +179,33 @@ def tubo(inicio, fim, raio_inicio, raio_fim, segmentos=8, indice_material=0,
     return verts, faces
 
 
+def extrudar(perfil, profundidade, indice_material=0, centro=(0, 0, 0)):
+    """
+    Extruda um contorno 2D `(x, z)` ao longo de Y — um recorte de chapa.
+
+    É a ferramenta certa para objetos definidos pela SILHUETA lateral: sapato,
+    machado, placa. Empilhar caixas para imitar um contorno inclinado sempre
+    produz escada, porque cada caixa tem topo horizontal.
+
+    O contorno deve estar em ordem anti-horária e ser convexo o bastante para
+    fechar com um leque de triângulos.
+    """
+    cx, cy, cz = centro
+    metade = profundidade / 2
+    n = len(perfil)
+    verts = [(x + cx, cy - metade, z + cz) for x, z in perfil]
+    verts += [(x + cx, cy + metade, z + cz) for x, z in perfil]
+    faces = []
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append(((i, j, j + n, i + n), indice_material))
+    # tampas por leque, a partir do primeiro vértice
+    for i in range(1, n - 1):
+        faces.append(((0, i + 1, i), indice_material))
+        faces.append(((n, n + i, n + i + 1), indice_material))
+    return verts, faces
+
+
 def quad(largura, altura, centro=(0, 0, 0), indice_material=0):
     """
     Um polígono vertical virado para -Y.

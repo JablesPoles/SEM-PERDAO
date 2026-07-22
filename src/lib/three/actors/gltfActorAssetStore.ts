@@ -415,10 +415,19 @@ export class GltfTableActor implements TableActor<THREE.Group> {
         if (canal === 'emissive-mask') {
           alvo.map = textura;
           alvo.emissiveMap = textura;
-          alvo.alphaMap = textura;
+          // NUNCA `alphaMap` aqui: no Three.js ele amostra o canal VERDE, não o
+          // alfa. Um rosto brasa (#ff784f, verde 0,47) caía inteiro no
+          // `alphaTest` 0,5 e sumia, enquanto o creme (verde 0,94) passava. O
+          // recorte tem que vir do alfa do próprio canvas, via `map`.
+          alvo.alphaMap = null;
           alvo.transparent = true;
-          alvo.alphaTest = 0.5;
+          alvo.alphaTest = 0.35;
           if (alvo.emissive) alvo.emissive.setRGB(1, 1, 1);
+          // Emissão moderada de propósito: o asset vem do Blender com força 12,
+          // e a essa intensidade QUALQUER cor satura para branco — o rosto
+          // brasa perdia o laranja. 1,7 ainda acende no blackout do ato final
+          // sem estourar o matiz.
+          alvo.emissiveIntensity = 1.7;
         } else {
           alvo.map = textura;
         }

@@ -8,10 +8,16 @@ jogo (volume/mute globais). Se um arquivo faltar, o jogo cai no som
 
 1. Crie conta em [elevenlabs.io](https://elevenlabs.io) e confirme no painel se
    o plano escolhido cobre SFX, TTS, Music e a licença necessária ao projeto.
-   > Limite confirmado no plano gratuito (22/07/2026): **vozes da biblioteca
-   > compartilhada não funcionam via API** — a chamada volta `402
-   > paid_plan_required`. Só as vozes nativas da conta (`voices.getAll()`)
-   > geram. Escolha o narrador entre elas ou o lote de voz falha inteiro.
+   > Dois limites confirmados no plano gratuito (22/07/2026), ambos `402`:
+   >
+   > 1. **Vozes da biblioteca compartilhada não funcionam via API.** Só as
+   >    nativas da conta (`voices.getAll()`). Escolha o narrador entre elas ou
+   >    o lote de voz falha inteiro.
+   > 2. **A API de Music é paga.** O preset `score` gera o ambiente e falha nas
+   >    cinco trilhas. Não é bloqueio: `src/lib/sounds.ts` tem sting
+   >    sintetizado para vitória, derrota e encerramento, e `music.ts` fica em
+   >    silêncio no resto. Gere as trilhas fora (gravação própria, CC0 ou outro
+   >    gerador), ponha em `public/audio/music/` e rode `npm run audio:index`.
 2. Pegue a key em **Settings → API Keys** e ponha no `.env.local`:
    ```
    ELEVENLABS_API_KEY=...

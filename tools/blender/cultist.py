@@ -33,7 +33,9 @@ from mathutils import Vector
 # plano pegando luz diferente. Passar de 8~10 no capuz apaga as facetas e a
 # peça vira um blob arredondado — foi o primeiro erro desta construção.
 SEGMENTOS = 10
-SEGMENTOS_CAPUZ = 8     # múltiplo de 4: a boca cai exatamente na frente
+# A ogiva da abertura precisa de colunas pra desenhar o arco; 8 dava um
+# retângulo de dois planos. 14 mantém o facetado e já lê como curva.
+SEGMENTOS_CAPUZ = 12
 ALTURA_CINTURA = 1.14
 ALTURA_OMBRO = 1.54
 # O capuz NASCE dentro do mantelete, não em cima dele. Base acima do topo da
@@ -64,17 +66,19 @@ PERFIL_MANTELETE = [
 #
 # `perfil` e `aba` são (fator_raio, fator_altura) normalizados: o primeiro sobe
 # da base à ponta, o segundo desce da base ao ombro.
-# `boca` = quantos dos 8 setores viram abertura (2 = 90°, 3 = 135°).
+# `boca` = largura MÁXIMA da janela em fração de volta (0,30 ≈ 108°);
+# `boca_ate` = até que anel da malha SUBDIVIDIDA a janela existe (o perfil
+# declarado com 6 pontos vira 11 anéis).
 CAPUZES = {
     # Ogiva de monge: barriga no meio, ponta média, aba curta na nuca.
     'HoodClassic': dict(
-        raio=0.47, altura=0.92, inclinacao=0.15, boca=2, boca_ate=3,
+        raio=0.47, altura=0.98, inclinacao=0.15, boca=0.32, boca_ate=6,
         perfil=[(0.76, 0.00), (1.00, 0.15), (0.95, 0.36), (0.74, 0.58), (0.40, 0.82), (0.02, 1.00)],
         aba=[(0.74, 0.00), (0.80, 0.34), (0.66, 0.66)],
     ),
     # Agulha: cone quase reto, sem barriga, ponta longa. A leitura é a altura.
     'HoodSpire': dict(
-        raio=0.39, altura=1.30, inclinacao=0.06, boca=2, boca_ate=3,
+        raio=0.40, altura=1.30, inclinacao=0.06, boca=0.28, boca_ate=5,
         perfil=[(0.86, 0.00), (0.96, 0.10), (0.80, 0.32), (0.55, 0.58), (0.27, 0.82), (0.02, 1.00)],
         aba=[(0.84, 0.00), (0.88, 0.28), (0.74, 0.54)],
     ),
@@ -85,7 +89,7 @@ CAPUZES = {
     # 2. o alargamento tem que ser mais vertical que horizontal. Ganhar 0,20 de
     #    raio em 0,17 de altura é uma aba de chapéu, não um capuz.
     'HoodShrouded': dict(
-        raio=0.57, altura=0.66, inclinacao=0.22, boca=3, boca_ate=3,
+        raio=0.57, altura=0.72, inclinacao=0.22, boca=0.38, boca_ate=6,
         perfil=[(0.62, 0.00), (0.78, 0.19), (0.92, 0.44), (0.84, 0.67), (0.48, 0.87), (0.02, 1.00)],
         aba=[(0.60, 0.00), (0.72, 0.50), (0.66, 1.00)],
     ),
@@ -106,9 +110,9 @@ ANCORAS = {
     'AnchorChest': (0.0, -0.10, 1.42),
     'AnchorHead': (0.0, -0.06, 1.92),
     'AnchorNameplate': (0.0, -0.46, 1.30),
-    'AnchorLeftHand': (-0.43, -0.70, 0.42),
-    'AnchorRightHand': (0.43, -0.70, 0.42),
-    'AnchorProjectileOrigin': (0.43, -0.80, 0.50),
+    'AnchorLeftHand': (-0.46, -0.62, 1.02),
+    'AnchorRightHand': (0.46, -0.62, 1.02),
+    'AnchorProjectileOrigin': (0.46, -0.72, 1.10),
 }
 
 
@@ -178,7 +182,7 @@ def material(nome):
         ligacoes = mat.node_tree.links
         if 'Emission Color' in principled.inputs:
             ligacoes.new(textura.outputs['Color'], principled.inputs['Emission Color'])
-            principled.inputs['Emission Strength'].default_value = 12.0
+            principled.inputs['Emission Strength'].default_value = 2.2
         ligacoes.new(textura.outputs['Alpha'], principled.inputs['Alpha'])
         principled.inputs['Base Color'].default_value = (0, 0, 0, 1)
         mat.blend_method = 'BLEND' if hasattr(mat, 'blend_method') else mat.blend_method
@@ -351,9 +355,16 @@ def manto_recortado(perfil, segmentos=SEGMENTOS, bicos=0.09, indice_material=0):
     return verts, faces
 
 
-# Mãos flutuando na beirada da mesa, como em `reus.ts` (BASE_MAO_Y = 0.28).
-# Elas não pendem de braço nenhum: a animação move os ossos `hand.*` direto.
-POSICAO_MAOS = ((-0.43, -0.70, 0.42), (0.43, -0.70, 0.42))
+# Mãos flutuando à frente do corpo, na altura em que um tampo estaria — logo
+# abaixo da cintura. Elas não pendem de braço nenhum: a animação move os ossos
+# `hand.*` direto, como o `reus.ts` faz.
+#
+# A primeira versão as pôs em z=0,42 copiando o número do procedural, mas lá o
+# ORIGEM do réu é o tampo da mesa (`tampo.position.y = -0.26`, cartas em 0,025)
+# e aqui é o chão. Copiar o número sem copiar o referencial deixou as mãos
+# arrastando perto do piso.
+ALTURA_MAOS = 1.02
+POSICAO_MAOS = ((-0.46, -0.62, ALTURA_MAOS), (0.46, -0.62, ALTURA_MAOS))
 
 
 def construir_maos():
@@ -379,79 +390,115 @@ def construir_corda():
     return objeto_de('Rope', verts, faces, ['Acessorio'])
 
 
+def subdividir(perfil, vezes=1):
+    """Insere pontos intermediários num perfil `(fator, fator)`."""
+    for _ in range(vezes):
+        saida = [perfil[0]]
+        for anterior, atual in zip(perfil, perfil[1:]):
+            saida.append(((anterior[0] + atual[0]) / 2, (anterior[1] + atual[1]) / 2))
+            saida.append(atual)
+        perfil = saida
+    return perfil
+
+
 def construir_capuz(nome, raio, altura, inclinacao, boca, boca_ate, perfil, aba):
     """
-    Capuz facetado com boca de tecido REAL.
+    Capuz com abertura em OGIVA, não janela retangular.
 
-    A construção é casca dupla costurada na borda: a superfície de fora e a de
-    dentro são geradas separadamente e depois unidas ao longo do recorte. Isso é
-    o que dá espessura visível no contorno da boca — sem essa costura o capuz
-    vira papel recortado, que foi como a primeira versão ficou.
+    O erro das versões anteriores foi recortar N setores inteiros de um torno de
+    8 lados: isso dá um buraco retangular de dois planos, que lê como visor de
+    capacete. O que faz um capuz parecer tecido é a abertura ESTREITAR em cima e
+    embaixo — larga na altura dos olhos, fechando no cocuruto e sob o queixo.
+    É a mesma ideia do `meiaAberturaOgiva` em `reus.ts`, que sempre funcionou.
 
-    Dentro, o vazio preto e o plano do rosto. A carinha do jogo é textura
-    trocada em runtime, não morph target, então o plano precisa existir no asset
-    para o runtime ter onde pintar.
+    A malha é casca dupla costurada na borda; a de dentro é o vazio preto, e a
+    costura é o que dá espessura de pano no contorno.
     """
     base_z = ALTURA_BASE_CAPUZ
     n_seg = SEGMENTOS_CAPUZ
+    # O perfil é subdividido antes de virar malha: a ogiva da abertura só
+    # desenha um arco se houver anéis suficientes para ela estreitar aos poucos.
+    # Com os 6 pontos originais a janela saía como uma cruz — largo no meio,
+    # estreito acima e abaixo, sem transição.
+    perfil = subdividir(perfil, 1)
     perfil = [(raio * fr, base_z + altura * fz) for fr, fz in perfil]
     n = len(perfil)
-    # Casca de dentro mais justa: lábio fino. Em 0,86 a testa do capuz
-    # engrossava e o personagem ganhava cara de capacete.
-    espessura = 0.91
-    anel_boca = boca_ate
+    espessura = 0.90
 
-    # A boca fica centrada na frente (-Y). Com n_seg múltiplo de 4, os setores
-    # cortados são simétricos em torno de 270°.
-    inicio_corte = (n_seg * 3) // 4 - boca // 2
-    cortados = {(inicio_corte + i) % n_seg for i in range(boca)}
-
-    def anel(r_escala, s, i):
-        angulo = 2.0 * math.pi * s / n_seg
-        raio_p, z = perfil[i]
-        return (raio_p * r_escala * math.cos(angulo),
-                raio_p * r_escala * math.sin(angulo), z)
+    # Meia-abertura por anel, em fração de volta. `boca` escala o conjunto, e
+    # `boca_ate` diz até que anel a janela ainda existe.
+    def meia_abertura(i):
+        if i >= boca_ate:
+            return 0.0
+        # 0 no anel da base, máximo no anel dos olhos, estreitando de novo
+        t = i / max(1, boca_ate - 1)
+        forma = math.sin(math.pi * (0.18 + 0.72 * t))
+        return forma * boca * 0.5
 
     verts, faces = [], []
     indice = {}
 
-    def vert(camada, s, i):
-        chave = (camada, s % n_seg, i)
-        if chave not in indice:
-            indice[chave] = len(verts)
-            verts.append(anel(1.0 if camada == 'fora' else espessura, s % n_seg, i))
+    def vert(camada, s, i, deslocado=None):
+        chave = (camada, s, i, deslocado)
+        if chave in indice:
+            return indice[chave]
+        escala = 1.0 if camada == 'fora' else espessura
+        raio_p, z = perfil[i]
+        angulo = deslocado if deslocado is not None else (2.0 * math.pi * s / n_seg)
+        indice[chave] = len(verts)
+        verts.append((raio_p * escala * math.cos(angulo),
+                      raio_p * escala * math.sin(angulo), z))
         return indice[chave]
+
+    # A boca fica centrada na frente (-Y), em 270°.
+    frente = 1.5 * math.pi
+
+    def dentro_da_boca(s, i):
+        meia = meia_abertura(i)
+        if meia <= 0:
+            return False
+        angulo = 2.0 * math.pi * s / n_seg
+        delta = abs(((angulo - frente + math.pi) % (2 * math.pi)) - math.pi)
+        return delta < meia * 2.0 * math.pi
 
     for s in range(n_seg):
         for i in range(n - 1):
-            aberto = s in cortados and 1 <= i < anel_boca
+            aberto = dentro_da_boca(s, i) and dentro_da_boca(s + 1, i)
             if not aberto:
                 faces.append(((vert('fora', s, i), vert('fora', s, i + 1),
-                               vert('fora', s + 1, i + 1), vert('fora', s + 1, i)), 0))
-            # A casca de dentro é o vazio que se vê pela boca — mas ela também
-            # precisa do recorte. Fechada na frente, ela tapa o rosto: era isso
-            # que deixava o capuz sem carinha, com o LED selado lá dentro.
+                               vert('fora', (s + 1) % n_seg, i + 1),
+                               vert('fora', (s + 1) % n_seg, i)), 0))
+            # A casca de dentro também precisa do recorte: fechada na frente
+            # ela tapa o rosto, e o capuz fica com o LED preso lá dentro. O
+            # fundo do vazio é a PARTE DE TRÁS dela, que continua inteira.
             if not aberto:
-                faces.append(((vert('dentro', s + 1, i), vert('dentro', s + 1, i + 1),
+                faces.append(((vert('dentro', (s + 1) % n_seg, i),
+                               vert('dentro', (s + 1) % n_seg, i + 1),
                                vert('dentro', s, i + 1), vert('dentro', s, i)), 1))
 
-    # Costura da borda: liga fora↔dentro ao longo do recorte. São as três
-    # bordas do vão — as duas laterais e o arco de cima.
-    lados = [(inicio_corte, 1), (inicio_corte + boca, -1)]
-    for s, sentido in lados:
-        for i in range(1, anel_boca):
-            a, b = vert('fora', s, i), vert('fora', s, i + 1)
-            c, d = vert('dentro', s, i + 1), vert('dentro', s, i)
-            faces.append(((a, b, c, d) if sentido > 0 else (d, c, b, a), 0))
-    for s in range(inicio_corte, inicio_corte + boca):
-        a, b = vert('fora', s, anel_boca), vert('fora', s + 1, anel_boca)
-        c, d = vert('dentro', s + 1, anel_boca), vert('dentro', s, anel_boca)
-        faces.append(((a, b, c, d), 0))
-    # lábio inferior da abertura, agora no anel 1
-    for s in range(inicio_corte, inicio_corte + boca):
-        a, b = vert('fora', s + 1, 1), vert('fora', s, 1)
-        c, d = vert('dentro', s, 1), vert('dentro', s + 1, 1)
-        faces.append(((a, b, c, d), 0))
+    # Costura: liga fora↔dentro em toda aresta que faz fronteira com a janela.
+    # Sem ela o capuz vira papel recortado, sem espessura no contorno.
+    for s in range(n_seg):
+        for i in range(n - 1):
+            aqui = dentro_da_boca(s, i) and dentro_da_boca(s + 1, i)
+            for ds, di in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                vs, vi = s + ds, i + di
+                if vi < 0 or vi >= n - 1:
+                    vizinho = False
+                else:
+                    vizinho = dentro_da_boca(vs % n_seg, vi) and dentro_da_boca((vs + 1) % n_seg, vi)
+                if not aqui or vizinho:
+                    continue
+                if di != 0:
+                    anel = i + (1 if di > 0 else 0)
+                    a, b = vert('fora', s, anel), vert('fora', (s + 1) % n_seg, anel)
+                    c, d = vert('dentro', (s + 1) % n_seg, anel), vert('dentro', s, anel)
+                    faces.append(((a, b, c, d) if di > 0 else (d, c, b, a), 0))
+                else:
+                    coluna = (s + 1) % n_seg if ds > 0 else s
+                    a, b = vert('fora', coluna, i), vert('fora', coluna, i + 1)
+                    c, d = vert('dentro', coluna, i + 1), vert('dentro', coluna, i)
+                    faces.append(((a, b, c, d) if ds > 0 else (d, c, b, a), 0))
 
     bloco_capuz = (verts, faces)
 
@@ -459,25 +506,18 @@ def construir_capuz(nome, raio, altura, inclinacao, boca, boca_ate, perfil, aba)
     # capuz fica "pousado" e a nuca some. Ela DESCE; se abrir, vira prateleira.
     perfil_aba = [(raio * fr, base_z - altura * 0.70 * fq) for fr, fq in aba]
     traseira = revolver(perfil_aba, segmentos=n_seg, indice_material=0,
-                        pular_frente=22.5 * boca, pular_ate=len(perfil_aba))
+                        pular_frente=45.0 * boca, pular_ate=len(perfil_aba))
 
-    # O rosto se alinha à ABERTURA, não à altura total do capuz. Derivar da
-    # altura fazia a carinha subir acima da boca no capuz alto (`spire`) e
-    # aparecer só a testa — cada capuz tem sua janela, e é nela que a cara mora.
-    boca_z0, boca_z1 = perfil[1][1], perfil[anel_boca][1]
-    centro_boca = (boca_z0 + boca_z1) / 2
-    janela = boca_z1 - boca_z0
-    # Recuado o bastante para o capuz cobrir a cabeça, perto o bastante para as
-    # luzes serem vistas pela boca. É o equilíbrio do Veigar.
-    rosto = quad_rosto(raio * 0.92, janela * 1.10,
-                       (0.0, -raio * 0.42, centro_boca), indice_material=2)
-
-    # Tampa do vazio atrás do rosto: sem ela, a boca aberta deixa ver o fundo da
-    # cena através do capuz — o vazio precisa ser vazio, não buraco.
-    fundo = quad_rosto(raio * 1.06, janela * 1.5,
-                       (0.0, raio * 0.10, centro_boca), indice_material=1)
-
-    verts, faces = juntar(bloco_capuz, traseira, fundo, rosto)
+    # O rosto se alinha à ABERTURA, não à altura total do capuz.
+    boca_z0, boca_z1 = perfil[0][1], perfil[min(boca_ate, n - 1)][1]
+    centro_boca = boca_z0 + (boca_z1 - boca_z0) * 0.58
+    janela = (boca_z1 - boca_z0) * 0.72
+    rosto = quad_rosto(raio * 0.82, janela,
+                       (0.0, -raio * 0.34, centro_boca), indice_material=2)
+    # Sem tampa de fundo: a casca INTERNA já é fechada em toda a volta e faz o
+    # papel do vazio. Um quad extra atrás do rosto só existia porque a primeira
+    # versão abria os dois lados — e ele acabava vazando por cima da ponta.
+    verts, faces = juntar(bloco_capuz, traseira, rosto)
 
     # A ponta cai para a frente — o perfil de carrasco das referências. O giro
     # acontece em torno da BASE do capuz; `rotation_euler` giraria em torno da
@@ -538,8 +578,8 @@ def construir_armature(pecas):
         ('spine', (0, 0, 0.36), (0, 0, ALTURA_CINTURA), 'root'),
         ('chest', (0, 0, ALTURA_CINTURA), (0, 0, ALTURA_OMBRO), 'spine'),
         ('head', (0, 0, ALTURA_OMBRO), (0, -0.08, 2.20), 'chest'),
-        ('hand.L', POSICAO_MAOS[0], (POSICAO_MAOS[0][0], POSICAO_MAOS[0][1], 0.60), 'chest'),
-        ('hand.R', POSICAO_MAOS[1], (POSICAO_MAOS[1][0], POSICAO_MAOS[1][1], 0.60), 'chest'),
+        ('hand.L', POSICAO_MAOS[0], (POSICAO_MAOS[0][0], POSICAO_MAOS[0][1], ALTURA_MAOS + 0.18), 'chest'),
+        ('hand.R', POSICAO_MAOS[1], (POSICAO_MAOS[1][0], POSICAO_MAOS[1][1], ALTURA_MAOS + 0.18), 'chest'),
     ]
     for nome, cabeca, cauda, pai in ossos:
         osso = armature.edit_bones.new(nome)
