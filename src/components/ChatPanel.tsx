@@ -39,18 +39,17 @@ export function ChatPanel({ messages, myPlayerId, onSend }: ChatPanelProps) {
   useEffect(() => {
     if (cooldownLeft <= 0) return;
     const id = setInterval(() => {
-      const left = Math.ceil((cooldownUntilRef.current - Date.now()) / 1000);
+      const left = Math.ceil((cooldownUntilRef.current - performance.now()) / 1000);
       setCooldownLeft(left > 0 ? left : 0);
     }, 250);
     return () => clearInterval(id);
   }, [cooldownLeft]);
 
-  const submit = () => {
-    if (Date.now() < cooldownUntilRef.current) return;
-    const text = input.trim();
+  const guardedSend = (rawText: string, now: number) => {
+    if (now < cooldownUntilRef.current) return;
+    const text = rawText.trim();
     if (!text) return;
 
-    const now = Date.now();
     sentTimesRef.current = [...sentTimesRef.current.filter((t) => now - t < WINDOW_MS), now];
     if (sentTimesRef.current.length > BURST) {
       cooldownUntilRef.current = now + COOLDOWN_MS;
@@ -59,6 +58,10 @@ export function ChatPanel({ messages, myPlayerId, onSend }: ChatPanelProps) {
     }
 
     onSend(text);
+  };
+
+  const submit = (now: number) => {
+    guardedSend(input, now);
     setInput('');
   };
 
@@ -106,7 +109,8 @@ export function ChatPanel({ messages, myPlayerId, onSend }: ChatPanelProps) {
         {TAUNTS.map((t) => (
           <button
             key={t}
-            onClick={() => onSend(t)}
+            onClick={(event) => guardedSend(t, event.timeStamp)}
+            disabled={onCooldown}
             className="whitespace-nowrap text-[11.5px] px-2.5 py-1 rounded-full border border-white/12 text-paper/70 hover:text-paper hover:border-red/60 active:scale-95 transition-all"
           >
             {t}
@@ -119,14 +123,14 @@ export function ChatPanel({ messages, myPlayerId, onSend }: ChatPanelProps) {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          onKeyDown={(event) => event.key === 'Enter' && submit(event.timeStamp)}
           placeholder={onCooldown ? `Calma… espere ${cooldownLeft}s` : 'Mensagem…'}
           maxLength={200}
           disabled={onCooldown}
           className="flex-1 h-[38px] bg-white/5 border border-white/10 text-paper rounded-[10px] px-3 text-[13px] outline-none focus:border-red/60 transition-colors placeholder:text-paper/35 disabled:opacity-60"
         />
         <button
-          onClick={submit}
+          onClick={(event) => submit(event.timeStamp)}
           disabled={!input.trim() || onCooldown}
           className="btn-red w-[38px] h-[38px] rounded-[10px] font-bold text-base transition-all hover:brightness-110 disabled:opacity-40"
         >

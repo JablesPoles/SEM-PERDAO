@@ -783,6 +783,13 @@ select:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html:focus-within { scroll-behavior: auto; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
   .tribunal-timer--urgent,
   .tribunal-verdict,
   .tribunal-finale,

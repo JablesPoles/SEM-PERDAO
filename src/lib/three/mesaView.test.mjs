@@ -166,6 +166,36 @@ test('normaliza e congela a aparência pública de cada assento', () => {
   assert.equal(Object.isFrozen(view.seats[0].appearance), true);
 });
 
+test('preserva toda a paleta expandida do lobby na mesa 3D', () => {
+  const players = [
+    player(10, {
+      appearance: {
+        robe: 'violet',
+        hood: 'shrouded',
+        face: 'grin',
+        accent: 'amethyst',
+        accessory: 'candle',
+      },
+    }),
+    player(20, {
+      appearance: {
+        robe: 'linen',
+        hood: 'spire',
+        face: 'ember',
+        accent: 'gold',
+        accessory: 'chain',
+      },
+    }),
+    player(30),
+  ];
+  const view = projectMesaView(state({ players }), 10);
+
+  assert.equal(view.seats[0].appearance.robe, 'violet');
+  assert.equal(view.seats[0].appearance.accent, 'amethyst');
+  assert.equal(view.seats[1].appearance.robe, 'linen');
+  assert.equal(view.seats[1].appearance.accent, 'gold');
+});
+
 test('na coleta expõe somente quais assentos enviaram, nunca a prova', () => {
   const gs = state({
     submissions: [{

@@ -7,7 +7,13 @@
 // Convenção de caminho: `<kind>/<id>` → /audio/<kind>/<id>.mp3
 //   ex.: 'sfx/hammer-stamp', 'music/lobby-loop', 'voice/guilty-1'
 
-import { getAudioContext, getAudioDestination, isMuted } from './sounds';
+import {
+  getAudioContext,
+  getAudioDestination,
+  isAudioChannelEnabled,
+  isMuted,
+  type AudioChannel,
+} from './sounds';
 
 const buffers = new Map<string, AudioBuffer | null>();
 const loading = new Map<string, Promise<AudioBuffer | null>>();
@@ -74,6 +80,7 @@ interface PlayOptions {
   gain?: number;
   loop?: boolean;
   rate?: number;
+  channel?: AudioChannel;
 }
 
 /** Controle de uma fonte tocando (pra parar loops de música/ambiente). */
@@ -87,11 +94,12 @@ export interface AssetHandle {
  * o asset não existe — aí o chamador usa o fallback sintetizado.
  */
 export function playAsset(path: string, options: PlayOptions = {}): AssetHandle | null {
-  if (isMuted() && !options.loop) return null;
+  const channel = options.channel ?? 'effects';
+  if ((isMuted() || !isAudioChannelEnabled(channel)) && !options.loop) return null;
   const buffer = buffers.get(path);
   if (!(buffer instanceof AudioBuffer)) return null;
   const ctx = getAudioContext();
-  const destination = getAudioDestination();
+  const destination = getAudioDestination(channel);
   if (!ctx || !destination) return null;
 
   const source = ctx.createBufferSource();

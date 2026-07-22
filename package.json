@@ -7,9 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "npm run test:game-guards && npm run test:mesa-view",
+    "test": "npm run test:game-guards && npm run test:room-core && npm run test:mesa-view && npm run test:stage-core && npm run test:audio-mixer",
     "test:game-guards": "playwright test tests/game-guards.spec.ts",
+    "test:room-core": "playwright test tests/room-core.spec.ts",
     "test:mesa-view": "node --test src/lib/three/mesaView.test.mjs",
+    "test:stage-core": "playwright test tests/stage-core.spec.ts",
+    "test:audio-mixer": "playwright test tests/audio-mixer.spec.ts",
     "audio:gen": "node scripts/generate-audio.mjs",
     "audio:list": "node scripts/generate-audio.mjs -- --list"
   },

@@ -16,6 +16,12 @@ import { Reu, EXPRESSOES, type Expressao, type Acao } from './reus';
 import type { MesaProofView, MesaSeatView, MesaView } from './mesaView';
 import { avatarColor } from '@/components/avatar';
 import {
+  TabletopStage,
+  type StageFrame,
+  type StageQuality,
+} from './tabletopStage';
+import type { FramingReport } from './framing';
+import {
   iniciarAmbiente,
   pararAmbiente,
   somArremesso,
@@ -396,15 +402,15 @@ function descartarObjeto(group: THREE.Object3D) {
 
 // ── Cena ──────────────────────────────────────────────────────────────────────
 export class RetroMesa {
+  private stage: TabletopStage;
   private renderer: THREE.WebGLRenderer;
-  private scene = new THREE.Scene();
+  private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
   private rt: THREE.WebGLRenderTarget;
   private blitScene = new THREE.Scene();
   private blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private blitMat: THREE.ShaderMaterial;
-  private timer = new THREE.Timer();
   private cartas: Carta[] = [];
   private provas: Carta[] = [];
   private cartaPreta: Carta | null = null;
@@ -469,29 +475,51 @@ export class RetroMesa {
     onFim: () => void;
   } | null = null;
   private onCulpadoCb: ((nome: string) => void) | null = null;
-  private raf = 0;
   private atoAtual: Ato = 'mesa';
   private povAnchor = new THREE.Vector3(...CONFIG_ATO.pov.pos);
   private povDirection = new THREE.Vector3();
   private pixelSize: number;
-  private disposed = false;
   private canvas: HTMLCanvasElement;
   private texturas: THREE.Texture[] = [];
+  private elapsed = 0;
 
   constructor(canvas: HTMLCanvasElement, opts: RetroMesaOptions) {
     this.canvas = canvas;
     this.canvas.style.cursor = 'grab';
     this.pixelSize = opts.pixelSize ?? 4;
-    this.reducedMotion = opts.reducedMotion ?? false;
+    this.reducedMotion = opts.reducedMotion
+      ?? globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+      ?? false;
     this.onSelfImpact = opts.onSelfImpact ?? null;
     this.realMode = !!opts.mesaView;
     this.selfId = opts.mesaView?.selfId ?? null;
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'low-power' });
+    const stageQuality: Record<Qualidade3D, StageQuality> = {
+      baixa: 'performance',
+      media: 'balanced',
+      alta: 'cinematic',
+    };
+    this.stage = new TabletopStage(canvas, {
+      quality: stageQuality[opts.qualidade ?? 'media'],
+      clearColor: 0x1b1a21,
+      fogColor: 0x1b1a21,
+      reducedMotion: this.reducedMotion,
+      powerPreference: opts.qualidade === 'alta' ? 'high-performance' : 'low-power',
+      near: 0.1,
+      far: 60,
+      fov: CONFIG_ATO.mesa.fov,
+      autoStart: false,
+      disposeRoot: false,
+      navigation: false,
+      postProcess: false,
+    });
+    this.stage.setResolutionProfile({ pixelScale: this.pixelSize, maxDevicePixelRatio: 1 });
+    this.renderer = this.stage.renderer;
+    this.scene = this.stage.scene;
+    this.camera = this.stage.camera;
     this.renderer.shadowMap.enabled = opts.qualidade !== 'baixa';
     this.renderer.shadowMap.type = THREE.BasicShadowMap; // sombra dura = retrô
 
-    this.camera = new THREE.PerspectiveCamera(CONFIG_ATO.mesa.fov, 1, 0.1, 60);
     this.camera.position.set(...CONFIG_ATO.mesa.pos);
 
     this.controls = new OrbitControls(this.camera, canvas);
@@ -515,7 +543,6 @@ export class RetroMesa {
     this.montarLampada();
     this.montarReus(opts.mesaView);
     this.montarCartas(opts.pretas ?? [], opts.brancas ?? [], !!opts.mesaView);
-    this.timer.connect(document);
 
     // ── passe de pixelização ──
     this.rt = new THREE.WebGLRenderTarget(2, 2, {
@@ -595,10 +622,12 @@ export class RetroMesa {
     });
     this.blitScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.blitMat));
 
-    this.resize();
+    this.stage.addResizeHandler((width, height) => this.resizePipeline(width, height));
+    this.stage.addUpdater(this.tick);
+    this.stage.setFrameRenderer(this.renderFrame);
     window.addEventListener('pointerdown', this.onPrimeiroGesto);
-    this.loop();
     if (opts.mesaView) this.syncMesa(opts.mesaView);
+    this.stage.start();
   }
 
   private criarBayer(): THREE.DataTexture {
@@ -899,7 +928,7 @@ export class RetroMesa {
       inicio,
       controle,
       fim,
-      t0: this.timer.getElapsed(),
+      t0: this.elapsed,
       dur: 1.05 + Math.random() * 0.2,
       giro: new THREE.Vector3(
         5 + Math.random() * 4,
@@ -954,7 +983,7 @@ export class RetroMesa {
     this.baloesFala.push({
       mesh,
       textura,
-      t0: this.timer.getElapsed(),
+      t0: this.elapsed,
       dur: Math.min(8, Math.max(1, duracao)),
     });
     autor?.setExpressao('desprezo');
@@ -1017,7 +1046,7 @@ export class RetroMesa {
       inicio,
       controle,
       fim,
-      t0: this.timer.getElapsed(),
+      t0: this.elapsed,
       dur: this.reducedMotion ? 0.45 : 0.75,
       giro: new THREE.Vector3(7, 9, 6),
       aoTerminar: () => {
@@ -1129,7 +1158,7 @@ export class RetroMesa {
       alvoRot: new THREE.Euler(0, slot.rotY, 0),
       origemPos: carta.group.position.clone(),
       origemRot: carta.group.rotation.clone(),
-      t0: this.timer.getElapsed(),
+      t0: this.elapsed,
       dur: 0.55,
     };
     somCarta();
@@ -1150,7 +1179,7 @@ export class RetroMesa {
     this.julgamento = {
       fila,
       idx: 0,
-      proximaT: this.timer.getElapsed() + 0.7,
+      proximaT: this.elapsed + 0.7,
       onRevela,
       onFim,
     };
@@ -1368,7 +1397,7 @@ export class RetroMesa {
     // se a última martelada ainda está caindo, a festa espera a sentença
     const atraso = this.marteloT >= 0 ? 2.3 : 0.5;
     this.vitoria = {
-      inicioT: this.timer.getElapsed() + atraso,
+      inicioT: this.elapsed + atraso,
       vencedores,
       confete,
       flocos,
@@ -1555,7 +1584,7 @@ export class RetroMesa {
       inicio,
       controle,
       fim,
-      t0: this.timer.getElapsed(),
+      t0: this.elapsed,
       dur: 0.7,
       giro: new THREE.Vector3(6 + Math.random() * 4, 8, 5),
       aoTerminar: () => {
@@ -1866,7 +1895,7 @@ export class RetroMesa {
       alvoRot,
       origemPos: c.group.position.clone(),
       origemRot: c.group.rotation.clone(),
-      t0: this.timer.getElapsed() + atraso,
+      t0: this.elapsed + atraso,
       dur: 0.7,
     };
   }
@@ -1882,23 +1911,74 @@ export class RetroMesa {
 
   setReducedMotion(reduced: boolean) {
     this.reducedMotion = reduced;
+    this.stage.setReducedMotion(reduced);
     if (reduced) {
       this.shake = 0;
       this.impactoShake = 0;
     }
   }
 
+  setQualidade(qualidade: Qualidade3D) {
+    const quality: Record<Qualidade3D, StageQuality> = {
+      baixa: 'performance',
+      media: 'balanced',
+      alta: 'cinematic',
+    };
+    this.stage.setQuality(quality[qualidade]);
+    this.stage.setResolutionProfile({ pixelScale: this.pixelSize, maxDevicePixelRatio: 1 });
+    this.renderer.shadowMap.enabled = qualidade !== 'baixa';
+    this.renderer.shadowMap.type = THREE.BasicShadowMap;
+  }
+
+  runPerformanceBenchmark(durationMs = 8000) {
+    return this.stage.runPerformanceBenchmark({
+      label: 'sem-perdao-retro-mesa',
+      warmupMs: 1000,
+      durationMs,
+      metadata: {
+        quality: this.stage.getQuality(),
+        pixelSize: this.pixelSize,
+        realMode: this.realMode,
+      },
+    });
+  }
+
+  performanceMetrics() {
+    return this.stage.metrics();
+  }
+
+  framingReport(): FramingReport | null {
+    const points: THREE.Vector3[] = [];
+    for (const defendant of this.reus) {
+      const position = defendant.group.position;
+      points.push(
+        new THREE.Vector3(position.x, 0, position.z),
+        new THREE.Vector3(position.x, 2.25, position.z)
+      );
+    }
+    // Mesa e carta preta continuam no quadro mesmo quando há poucos réus.
+    points.push(
+      new THREE.Vector3(-4.7, 0, -3.5),
+      new THREE.Vector3(4.7, 0, -3.5),
+      new THREE.Vector3(-4.7, 0, 3.8),
+      new THREE.Vector3(4.7, 0, 3.8),
+      new THREE.Vector3(0, 2.1, 0)
+    );
+    return this.stage.framingReportForPoints(points, 0.025);
+  }
+
   setPixelSize(px: number) {
     this.pixelSize = Math.max(1, Math.round(px));
+    this.stage.setResolutionProfile({ pixelScale: this.pixelSize, maxDevicePixelRatio: 1 });
     this.resize();
   }
 
   resize() {
-    const w = this.canvas.clientWidth || 1;
-    const h = this.canvas.clientHeight || 1;
+    this.stage.resize();
+  }
+
+  private resizePipeline(w: number, h: number) {
     // renderiza pequeno; o CSS (image-rendering: pixelated) amplia
-    this.renderer.setPixelRatio(1);
-    this.renderer.setSize(w, h, false);
     const lw = Math.max(2, Math.floor(w / this.pixelSize));
     const lh = Math.max(2, Math.floor(h / this.pixelSize));
     this.rt.setSize(lw, lh);
@@ -1907,12 +1987,8 @@ export class RetroMesa {
     this.aplicarFov();
   }
 
-  private loop = (timestamp?: number) => {
-    if (this.disposed) return;
-    this.raf = requestAnimationFrame(this.loop);
-    this.timer.update(timestamp);
-    const dt = Math.min(this.timer.getDelta(), 0.05);
-    const t = this.timer.getElapsed();
+  private tick = ({ delta: dt, elapsed: t }: StageFrame) => {
+    this.elapsed = t;
 
     this.controls.update();
     if (this.atoAtual === 'pov') this.travarPovNaCadeira();
@@ -2072,13 +2148,16 @@ export class RetroMesa {
         (Math.random() - 0.5) * shakeStrength,
         (Math.random() - 0.5) * shakeStrength * 0.25
       );
-      this.camera.position.add(this.shakeOffset);
       this.shake *= Math.exp(-dt * 9);
       this.impactoShake *= Math.exp(-dt * 12);
     }
 
+  };
+
+  private renderFrame = ({ elapsed }: StageFrame) => {
     // 1º passe: cena → render target pequeno
-    this.blitMat.uniforms.uTime.value = t;
+    this.blitMat.uniforms.uTime.value = elapsed;
+    this.camera.position.add(this.shakeOffset);
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
     this.camera.position.sub(this.shakeOffset);
@@ -2088,11 +2167,9 @@ export class RetroMesa {
   };
 
   dispose() {
-    this.disposed = true;
-    cancelAnimationFrame(this.raf);
+    this.stage.stop();
     window.removeEventListener('pointerdown', this.onPrimeiroGesto);
     this.controls.dispose();
-    this.timer.dispose();
     this.encerrarVitoria();
     this.lousa?.tex?.dispose();
     pararAmbiente();
@@ -2113,6 +2190,6 @@ export class RetroMesa {
         mats.forEach((m) => m.dispose());
       }
     });
-    this.renderer.dispose();
+    this.stage.dispose();
   }
 }

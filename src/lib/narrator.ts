@@ -5,6 +5,7 @@
 // falas atropeladas.
 
 import { loadAsset, playAsset, preloadAssets } from './audioAssets';
+import { isAudioChannelEnabled, isMuted } from './sounds';
 
 export type NarrationEvent = 'guilty' | 'round-open' | 'judging' | 'finale';
 
@@ -26,6 +27,7 @@ export function preloadNarration(): void {
 
 /** Toca uma variante aleatória do evento, se houver arquivo e sem cooldown. */
 export function narrate(event: NarrationEvent, gain = 0.9): void {
+  if (isMuted() || !isAudioChannelEnabled('narration')) return;
   const now = Date.now();
   if (now - lastAt < COOLDOWN_MS) return;
   const pool = LINES[event];
@@ -33,6 +35,6 @@ export function narrate(event: NarrationEvent, gain = 0.9): void {
   const path = pool[Math.floor(Math.random() * pool.length)];
   lastAt = now;
   void loadAsset(path).then((buffer) => {
-    if (buffer) playAsset(path, { gain });
+    if (buffer) playAsset(path, { gain, channel: 'narration' });
   });
 }

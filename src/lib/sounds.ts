@@ -16,15 +16,35 @@ export type SoundName =
   | 'defeat'     // a partida acabou e não foi você
   | 'ending';    // encerramento/recap da sessão
 
+export type AudioChannel = 'effects' | 'music' | 'narration';
+
+export const AUDIO_CHANNELS: readonly AudioChannel[] = ['effects', 'music', 'narration'];
+
 const MUTE_KEY = 'sp-muted';
 const VOLUME_KEY = 'sp-volume';
 const DEFAULT_VOLUME = 0.8;
 const MASTER_HEADROOM = 0.9;
 const MASTER_RAMP_SECONDS = 0.035;
+const CHANNEL_RAMP_SECONDS = 0.08;
+const CHANNEL_DEFAULT_VOLUME: Readonly<Record<AudioChannel, number>> = Object.freeze({
+  effects: 0.9,
+  music: 0.58,
+  narration: 0.9,
+});
+const CHANNEL_ENABLED_KEY: Readonly<Record<AudioChannel, string>> = Object.freeze({
+  effects: 'sp-audio-effects-enabled',
+  music: 'sp-audio-music-enabled',
+  narration: 'sp-audio-narration-enabled',
+});
+const CHANNEL_VOLUME_KEY: Readonly<Record<AudioChannel, string>> = Object.freeze({
+  effects: 'sp-audio-effects-volume',
+  music: 'sp-audio-music-volume',
+  narration: 'sp-audio-narration-volume',
+});
 
 interface AudioMixer {
   context: AudioContext;
-  input: GainNode;
+  channels: Record<AudioChannel, GainNode>;
   limiter: DynamicsCompressorNode;
   master: GainNode;
 }
@@ -33,6 +53,12 @@ let mixer: AudioMixer | null = null;
 let lifecycleInstalled = false;
 let fallbackMuted = false;
 let fallbackVolume = DEFAULT_VOLUME;
+const fallbackChannelEnabled: Record<AudioChannel, boolean> = {
+  effects: true,
+  music: true,
+  narration: true,
+};
+const fallbackChannelVolume: Record<AudioChannel, number> = { ...CHANNEL_DEFAULT_VOLUME };
 
 function clampVolume(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_VOLUME;
@@ -78,6 +104,24 @@ function targetMasterGain(): number {
   return Math.pow(getVolume(), 1.35) * MASTER_HEADROOM;
 }
 
+export function isAudioChannelEnabled(channel: AudioChannel): boolean {
+  const stored = readStorage(CHANNEL_ENABLED_KEY[channel]);
+  return stored === null ? fallbackChannelEnabled[channel] : stored !== '0';
+}
+
+export function getAudioChannelVolume(channel: AudioChannel): number {
+  const stored = readStorage(CHANNEL_VOLUME_KEY[channel]);
+  if (stored === null) return fallbackChannelVolume[channel];
+  const parsed = Number(stored);
+  return Number.isFinite(parsed) ? clampVolume(parsed) : fallbackChannelVolume[channel];
+}
+
+function targetChannelGain(channel: AudioChannel): number {
+  return isAudioChannelEnabled(channel)
+    ? Math.pow(getAudioChannelVolume(channel), 1.2)
+    : 0;
+}
+
 function updateMasterGain(immediate = false) {
   if (!mixer || mixer.context.state === 'closed') return;
   const { context, master } = mixer;
@@ -87,6 +131,19 @@ function updateMasterGain(immediate = false) {
   master.gain.setValueAtTime(master.gain.value, now);
   if (immediate) master.gain.setValueAtTime(target, now);
   else master.gain.linearRampToValueAtTime(target, now + MASTER_RAMP_SECONDS);
+}
+
+function updateChannelGains(immediate = false) {
+  if (!mixer || mixer.context.state === 'closed') return;
+  const now = mixer.context.currentTime;
+  for (const channel of AUDIO_CHANNELS) {
+    const gain = mixer.channels[channel].gain;
+    const target = targetChannelGain(channel);
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    if (immediate) gain.setValueAtTime(target, now);
+    else gain.linearRampToValueAtTime(target, now + CHANNEL_RAMP_SECONDS);
+  }
 }
 
 function installLifecycleHandlers() {
@@ -118,6 +175,16 @@ function installLifecycleHandlers() {
       fallbackVolume = clampVolume(Number(event.newValue));
     }
     if (event.key === MUTE_KEY || event.key === VOLUME_KEY) updateMasterGain();
+    for (const channel of AUDIO_CHANNELS) {
+      if (event.key === CHANNEL_ENABLED_KEY[channel]) {
+        fallbackChannelEnabled[channel] = event.newValue !== '0';
+        updateChannelGains();
+      }
+      if (event.key === CHANNEL_VOLUME_KEY[channel] && event.newValue !== null) {
+        fallbackChannelVolume[channel] = clampVolume(Number(event.newValue));
+        updateChannelGains();
+      }
+    }
   });
 }
 
@@ -132,11 +199,18 @@ function ensureMixer(): AudioMixer | null {
   if (!AudioContextClass) return null;
 
   const context = new AudioContextClass();
-  const input = context.createGain();
+  const channels: Record<AudioChannel, GainNode> = {
+    effects: context.createGain(),
+    music: context.createGain(),
+    narration: context.createGain(),
+  };
   const limiter = context.createDynamicsCompressor();
   const master = context.createGain();
 
-  input.gain.value = 1;
+  for (const channel of AUDIO_CHANNELS) {
+    channels[channel].gain.value = targetChannelGain(channel);
+    channels[channel].connect(limiter);
+  }
   // Atua como limiter musical: segura rajadas simultâneas sem esmagar o drone.
   limiter.threshold.value = -10;
   limiter.knee.value = 2;
@@ -145,8 +219,8 @@ function ensureMixer(): AudioMixer | null {
   limiter.release.value = 0.16;
   master.gain.value = targetMasterGain();
 
-  input.connect(limiter).connect(master).connect(context.destination);
-  mixer = { context, input, limiter, master };
+  limiter.connect(master).connect(context.destination);
+  mixer = { context, channels, limiter, master };
   installLifecycleHandlers();
   return mixer;
 }
@@ -160,8 +234,8 @@ export function getAudioContext(): AudioContext | null {
 }
 
 /** Entrada segura do mixer. Nenhum som do jogo deve ligar direto ao destination. */
-export function getAudioDestination(): AudioNode | null {
-  return ensureMixer()?.input ?? null;
+export function getAudioDestination(channel: AudioChannel = 'effects'): AudioNode | null {
+  return ensureMixer()?.channels[channel] ?? null;
 }
 
 /** Retoma o mixer, normalmente a partir de um clique/toque permitido pelo browser. */
@@ -175,6 +249,7 @@ export async function resumeAudio(): Promise<AudioContext | null> {
   }
   if (current.context.state !== 'running') return null;
   updateMasterGain();
+  updateChannelGains();
   return current.context;
 }
 
@@ -203,6 +278,20 @@ export function setVolume(volume: number) {
   writeStorage(VOLUME_KEY, String(fallbackVolume));
   updateMasterGain();
   if (!isMuted() && fallbackVolume > 0) void resumeAudio();
+}
+
+export function setAudioChannelEnabled(channel: AudioChannel, enabled: boolean) {
+  fallbackChannelEnabled[channel] = enabled;
+  writeStorage(CHANNEL_ENABLED_KEY[channel], enabled ? '1' : '0');
+  updateChannelGains();
+  if (enabled && !isMuted()) void resumeAudio();
+}
+
+export function setAudioChannelVolume(channel: AudioChannel, volume: number) {
+  fallbackChannelVolume[channel] = clampVolume(volume);
+  writeStorage(CHANNEL_VOLUME_KEY[channel], String(fallbackChannelVolume[channel]));
+  updateChannelGains();
+  if (fallbackChannelVolume[channel] > 0 && !isMuted()) void resumeAudio();
 }
 
 type Note = [freq: number, at: number, dur: number, gain?: number, type?: OscillatorType];
@@ -260,7 +349,10 @@ const CUE_ASSETS: Partial<Record<SoundName, string>> = {
 let preloaded = false;
 
 export function playSound(name: SoundName) {
-  if (isMuted()) return;
+  const channel: AudioChannel = name === 'victory' || name === 'defeat' || name === 'ending'
+    ? 'music'
+    : 'effects';
+  if (isMuted() || !isAudioChannelEnabled(channel)) return;
   const requestedAt = Date.now();
   const audio = getAudioContext();
   if (!audio) return;
@@ -268,8 +360,8 @@ export function playSound(name: SoundName) {
   const play = (running: AudioContext) => {
     // Não despeja efeitos antigos quando um autoplay bloqueado só for liberado
     // muito depois por outro gesto.
-    if (Date.now() - requestedAt > 600 || isMuted()) return;
-    const destination = getAudioDestination();
+    if (Date.now() - requestedAt > 600 || isMuted() || !isAudioChannelEnabled(channel)) return;
+    const destination = getAudioDestination(channel);
     if (!destination || destination.context !== running) return;
 
     // Na primeira reprodução (áudio liberado por gesto), aquece os arquivos.
@@ -285,7 +377,7 @@ export function playSound(name: SoundName) {
     const assetPath = CUE_ASSETS[name];
     if (assetPath) {
       import('./audioAssets').then(({ hasAsset, playAsset, loadAsset }) => {
-        if (hasAsset(assetPath)) playAsset(assetPath);
+        if (hasAsset(assetPath)) playAsset(assetPath, { channel });
         else { scheduleCue(running, destination, name); void loadAsset(assetPath); }
       });
       return;

@@ -44,6 +44,56 @@ import {
 } from '../lib/game';
 import { ALL_BLACK, ALL_WHITE } from '../lib/cards';
 import { BOT_NAMES, getBotJudgeIndex, getBotSubmission } from '../lib/ai';
+import {
+  createRoomEnvelope,
+  cursorFromEnvelope,
+  parseRoomEnvelope,
+  shouldAcceptSnapshot,
+  type RoomEnvelope,
+  type SnapshotCursor,
+} from '../lib/room/protocol';
+import {
+  channelStatusOutcome,
+  RECONNECT_GIVE_UP_MS,
+  trackPresence,
+} from '../lib/room/realtime';
+import { createRateGuard, normalizeRoomText } from '../lib/room/rateLimit';
+import {
+  createRoomId,
+  createSeatToken,
+  hashSeatToken,
+  isRoomId,
+  normalizeReaction,
+  normalizeSeatLedger,
+  parseAuthenticatedRequest,
+  parseHostChallenge,
+  parseHostChallengeClaim,
+  parseHostHello,
+  parseHostProof,
+  parseJoinRequest,
+  parseResumeProof,
+  parseResumeRequest,
+  parseSeatCredential,
+  parseSecureWelcome,
+  ROOM_SESSION_MAX_AGE_MS,
+  type AuthenticatedRequest,
+  type JoinRequest,
+  type SeatCredential,
+  type SeatLedgerEntry,
+  type SecureClientRequest,
+  verifySeatToken,
+} from '../lib/room/semPerdaoProtocol';
+import {
+  createEncryptionIdentity,
+  decryptFrom,
+  encryptFor,
+  importEncryptionIdentity,
+  isEncryptedMessage,
+  parseSerializedEncryptionIdentity,
+  samePublicKey,
+  type EncryptionIdentity,
+} from '../lib/room/secureChannel';
+import { clearRoomSession, loadRoomSession, saveRoomSession } from '../lib/room/session';
 
 export type MultiplayerRole = 'host' | 'guest' | 'connecting';
 
@@ -89,13 +139,73 @@ export interface UseMultiplayerReturn {
   disconnect: () => Promise<void>;
 }
 
-const MAX_RECONNECT_ATTEMPTS = 10;
 // Presença oscila em conexão móvel ruim; só marca o assento como offline se o
 // jogador ficar fora por este tempo. A partida nunca é pausada.
-const DISCONNECT_GRACE_MS = 5000;
+const DISCONNECT_GRACE_MS = 12000;
 // Ids de bot ficam bem acima dos de humanos para nunca colidirem.
 const BOT_ID_BASE = 100;
 const RITUAL_COUNTDOWN_MS = 3000;
+const CONTROL_HEARTBEAT_MS = 25000;
+const PRIVATE_SUBSCRIBE_TIMEOUT_MS = 8000;
+
+type RoomChannel = ReturnType<typeof supabase.channel>;
+
+type PendingHandshake = JoinRequest;
+
+interface HostPeer {
+  playerId: number;
+  clientId: string;
+  connectionId: string;
+  publicKey: JsonWebKey;
+  token: string;
+  privateTopic: string;
+  channel: RoomChannel;
+}
+
+interface LobbyWirePayload {
+  players: LobbyPlayer[];
+  rules: LobbyRules;
+  countdownEndsAt: number | null;
+  seq: number;
+  seatLedger: SeatLedgerEntry[];
+}
+
+interface PrivateStatePayload {
+  state: GameState;
+  seatLedger: SeatLedgerEntry[];
+}
+
+interface StoredRoomContext {
+  hostId: number;
+  gameId: string | null;
+  seatLedger: SeatLedgerEntry[];
+}
+
+interface PendingAuthority {
+  envelope: RoomEnvelope;
+  hello: {
+    hostId: number;
+    hostConnectionId: string;
+    publicKey: JsonWebKey;
+  };
+  challengeNonce: string;
+  challengedAt: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isGameStateSnapshot(value: unknown): value is GameState {
+  if (!isRecord(value)) return false;
+  return ['setup', 'submitting', 'judging', 'round-end', 'game-end'].includes(String(value.phase))
+    && Array.isArray(value.players)
+    && Array.isArray(value.submissions)
+    && Array.isArray(value.blackDeck)
+    && Array.isArray(value.whiteDeck)
+    && Number.isSafeInteger(value.round)
+    && Number.isSafeInteger(value.stateRevision);
+}
 
 export const DEFAULT_LOBBY_RULES: LobbyRules = Object.freeze({
   mode: 'judge',
@@ -214,10 +324,44 @@ export function useMultiplayer(
   customCards: CustomCards
 ): UseMultiplayerReturn {
   const pidKey = `sp-pid-${roomCode}`;
+  const sessionKey = `sp-seat-session-${roomCode}`;
+  const contextKey = `sp-room-context-${roomCode}`;
   const hostStateKey = `sp-host-state-${roomCode}`;
   const hostLobbyKey = `sp-host-lobby-${roomCode}`;
+  const [restoredSeatSession] = useState<unknown>(() => {
+    if (typeof window === 'undefined') return null;
+    return loadRoomSession(
+      sessionStorage,
+      sessionKey,
+      roomCode,
+      ROOM_SESSION_MAX_AGE_MS
+    );
+  });
+  const [restoredCredential] = useState<SeatCredential | null>(() =>
+    parseSeatCredential(restoredSeatSession)
+  );
+  const [restoredEncryptionIdentity] = useState(() =>
+    isRecord(restoredSeatSession)
+      ? parseSerializedEncryptionIdentity(restoredSeatSession.encryptionIdentity)
+      : null
+  );
+  const [restoredContext] = useState<StoredRoomContext | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const value = loadRoomSession<StoredRoomContext>(
+      sessionStorage,
+      contextKey,
+      roomCode,
+      ROOM_SESSION_MAX_AGE_MS
+    );
+    if (!value || !Number.isSafeInteger(value.hostId) || value.hostId < 0) return null;
+    return {
+      hostId: value.hostId,
+      gameId: isRoomId(value.gameId) ? value.gameId : null,
+      seatLedger: normalizeSeatLedger(value.seatLedger),
+    };
+  });
   const initialHostPlayerId = initialIsHost && typeof window !== 'undefined'
-    ? Number(sessionStorage.getItem(pidKey) ?? 0)
+    ? restoredCredential?.playerId ?? Number(sessionStorage.getItem(pidKey) ?? 0)
     : 0;
 
   // Quem comanda a mesa pode mudar no meio do jogo: se o host sair, o próximo
@@ -226,7 +370,9 @@ export function useMultiplayer(
   const [isHost, setIsHost] = useState(initialIsHost);
   const isHostRef = useRef(initialIsHost);
   const [hostId, setHostId] = useState(
-    Number.isFinite(initialHostPlayerId) ? initialHostPlayerId : 0
+    initialIsHost && Number.isFinite(initialHostPlayerId)
+      ? initialHostPlayerId
+      : restoredContext?.hostId ?? 0
   );
   const hostIdRef = useRef(hostId);
   const [becameHost, setBecameHost] = useState(false);
@@ -236,11 +382,7 @@ export function useMultiplayer(
   // Convidados lembram o assento entre reloads: F5 volta pro mesmo jogo.
   const [myPlayerId, setMyPlayerId] = useState<number | null>(() => {
     if (isHost) return Number.isFinite(initialHostPlayerId) ? initialHostPlayerId : 0;
-    if (typeof window !== 'undefined') {
-      const saved = sessionStorage.getItem(pidKey);
-      if (saved !== null && !Number.isNaN(Number(saved))) return Number(saved);
-    }
-    return null;
+    return restoredCredential?.playerId ?? null;
   });
 
   // O host restaura um jogo em andamento após reload, pra um F5 não matar a
@@ -253,6 +395,8 @@ export function useMultiplayer(
       countdownEndsAt: null as number | null,
       lobbySeq: 0,
       nextPlayerId: 1,
+      seatLedger: [] as SeatLedgerEntry[],
+      gameId: null as string | null,
     };
     if (!isHost || typeof window === 'undefined') return empty;
     try {
@@ -265,6 +409,8 @@ export function useMultiplayer(
             countdownEndsAt?: number | null;
             lobbySeq?: number;
             nextPlayerId: number;
+            seatLedger?: SeatLedgerEntry[];
+            gameId?: string | null;
           })
         : null;
       // Snapshot de versão antiga pode não ter os campos novos — completa.
@@ -279,6 +425,7 @@ export function useMultiplayer(
             tieBreak: parsed.tieBreak ?? false,
             revealed: parsed.revealed ?? [],
             phaseStartedAt: parsed.phaseStartedAt ?? Date.now(),
+            stateRevision: parsed.stateRevision ?? 0,
             players: parsed.players.map((player) => ({
               ...player,
               connected: player.connected ?? true,
@@ -298,6 +445,8 @@ export function useMultiplayer(
             : null,
         lobbySeq: Number.isInteger(meta?.lobbySeq) ? Math.max(0, meta!.lobbySeq!) : 0,
         nextPlayerId: meta?.nextPlayerId ?? 1,
+        seatLedger: normalizeSeatLedger(meta?.seatLedger),
+        gameId: isRoomId(meta?.gameId) ? meta.gameId : null,
       };
     } catch {
       return empty;
@@ -328,11 +477,43 @@ export function useMultiplayer(
   const [awaitingApproval, setAwaitingApproval] = useState(false);
   const [joinRejected, setJoinRejected] = useState(false);
 
-  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const channelRef = useRef<RoomChannel | null>(null);
   const hostGameRef = useRef<GameState | null>(restoredHost.game);
   const nextPlayerIdRef = useRef(restoredHost.nextPlayerId);
-  const [clientId] = useState(() => Math.random().toString(36).slice(2));
+  const [clientId] = useState(() => createRoomId('client'));
+  const [connectionId] = useState(() => createRoomId('connection'));
   const clientIdRef = useRef(clientId);
+  const connectionIdRef = useRef(connectionId);
+  const authorityEpochRef = useRef(initialIsHost ? createRoomId('authority') : 'authority-pending');
+  const hostConnectionIdRef = useRef(initialIsHost ? connectionId : 'connection-pending');
+  const gameIdRef = useRef<string | null>(restoredHost.gameId ?? restoredContext?.gameId ?? null);
+  const encryptionIdentityRef = useRef<EncryptionIdentity | null>(null);
+  const hostPublicKeyRef = useRef<JsonWebKey | null>(null);
+  const credentialRef = useRef<SeatCredential | null>(restoredCredential);
+  const seatLedgerRef = useRef<SeatLedgerEntry[]>(
+    restoredHost.seatLedger.length ? restoredHost.seatLedger : restoredContext?.seatLedger ?? []
+  );
+  const snapshotCursorRef = useRef<SnapshotCursor | null>(null);
+  const guestPrivateChannelRef = useRef<RoomChannel | null>(null);
+  const hostPeersRef = useRef<Map<number, HostPeer>>(new Map());
+  const pendingHandshakesRef = useRef<Map<string, PendingHandshake>>(new Map());
+  const acceptedRequestIdsRef = useRef<Set<string>>(new Set());
+  const leavingRef = useRef(false);
+  const pendingAuthorityRef = useRef<PendingAuthority | null>(null);
+  const sendSecureRequestRef = useRef<(request: SecureClientRequest) => Promise<boolean>>(
+    async () => false
+  );
+  const issueWelcomeRef = useRef<(
+    handshake: PendingHandshake,
+    playerId: number,
+    token?: string
+  ) => Promise<boolean>>(async () => false);
+  const sendJoinStatusRef = useRef<(
+    clientId: string,
+    kind: 'join_pending' | 'join_rejected',
+    reason?: string
+  ) => Promise<void>>(async () => {});
+  const announceHostRef = useRef<() => void>(() => {});
   const pendingNextRoundRef = useRef<Set<number>>(new Set());
   const lobbyPlayersRef = useRef<LobbyPlayer[]>(lobbyPlayers);
   const lobbyRulesRef = useRef<LobbyRules>(lobbyRules);
@@ -369,7 +550,8 @@ export function useMultiplayer(
   const awaitingApprovalRef = useRef(false);
   const gameStateRef = useRef<GameState | null>(restoredHost.game);
   const maybePromoteSelfRef = useRef<(goneHostId: number) => void>(() => {});
-  const promotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatRateGuardRef = useRef(createRateGuard({ limit: 6, windowMs: 8_000, cooldownMs: 15_000 }));
+  const reactionRateGuardRef = useRef(createRateGuard({ limit: 8, windowMs: 5_000, cooldownMs: 8_000 }));
 
   useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
   useEffect(() => { pendingJoinsRef.current = pendingJoins; }, [pendingJoins]);
@@ -381,26 +563,81 @@ export function useMultiplayer(
   useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
   useEffect(() => { customCardsRef.current = customCards; }, [customCards]);
 
-  const send = useCallback((event: string, payload: Record<string, unknown>) => {
+  const sendRaw = useCallback((event: string, payload: unknown) => {
     channelRef.current?.send({ type: 'broadcast', event, payload });
   }, []);
 
-  // Host → convidados: uma cópia redigida do estado por convidado humano.
-  const broadcastState = useCallback((gs: GameState) => {
-    for (const lp of lobbyPlayersRef.current) {
-      if (lp.id === hostIdRef.current || lp.isBot) continue;
-      send('game_state', { state: redactStateFor(gs, lp.id), target: lp.id });
+  const sendControl = useCallback((
+    kind: string,
+    payload: unknown,
+    revision = 0,
+    gameId = gameIdRef.current
+  ) => {
+    if (!isRoomId(authorityEpochRef.current) || !isRoomId(connectionIdRef.current)) return;
+    const envelope = createRoomEnvelope(kind, payload, {
+      roomCode,
+      gameId,
+      authorityEpoch: authorityEpochRef.current,
+      hostId: hostIdRef.current,
+      senderId: myPlayerIdRef.current ?? 0,
+      senderConnectionId: connectionIdRef.current,
+      revision,
+    });
+    sendRaw('room', envelope);
+  }, [roomCode, sendRaw]);
+
+  const sendPrivateToPeer = useCallback(async (
+    peer: HostPeer,
+    kind: string,
+    payload: unknown,
+    revision = 0,
+    gameId = gameIdRef.current
+  ) => {
+    const identity = encryptionIdentityRef.current;
+    if (!identity || !isHostRef.current) return false;
+    const envelope = createRoomEnvelope(kind, payload, {
+      roomCode,
+      gameId,
+      authorityEpoch: authorityEpochRef.current,
+      hostId: hostIdRef.current,
+      senderId: hostIdRef.current,
+      senderConnectionId: connectionIdRef.current,
+      revision,
+    });
+    try {
+      const encrypted = await encryptFor(identity, peer.publicKey, envelope);
+      await peer.channel.send({ type: 'broadcast', event: 'secure', payload: encrypted });
+      return true;
+    } catch {
+      return false;
     }
-  }, [send]);
+  }, [roomCode]);
+
+  // Host → convidados: O(N), um canal cifrado por assento. Nenhum convidado
+  // recebe os snapshots destinados aos demais, nem mesmo como ciphertext.
+  const broadcastState = useCallback((gs: GameState) => {
+    const gameId = gameIdRef.current ?? createRoomId('game');
+    gameIdRef.current = gameId;
+    for (const peer of hostPeersRef.current.values()) {
+      void sendPrivateToPeer(peer, 'game_state', {
+        state: redactStateFor(gs, peer.playerId),
+        seatLedger: seatLedgerRef.current,
+      } satisfies PrivateStatePayload, gs.stateRevision ?? 0, gameId);
+    }
+  }, [sendPrivateToPeer]);
 
   const broadcastLobby = useCallback((players: LobbyPlayer[]) => {
-    send('lobby', {
+    const payload = {
       players,
       rules: lobbyRulesRef.current,
       countdownEndsAt: countdownEndsAtRef.current,
       seq: lobbySeqRef.current,
-    });
-  }, [send]);
+      seatLedger: seatLedgerRef.current,
+    } satisfies LobbyWirePayload;
+    for (const peer of hostPeersRef.current.values()) {
+      void sendPrivateToPeer(peer, 'lobby', payload, lobbySeqRef.current);
+    }
+  }, [sendPrivateToPeer]);
 
   const persistHostLobby = useCallback(() => {
     try {
@@ -410,6 +647,8 @@ export function useMultiplayer(
         countdownEndsAt: countdownEndsAtRef.current,
         lobbySeq: lobbySeqRef.current,
         nextPlayerId: nextPlayerIdRef.current,
+        seatLedger: seatLedgerRef.current,
+        gameId: gameIdRef.current,
       }));
     } catch { /* storage cheio/indisponível — persistência é melhor esforço */ }
   }, [hostLobbyKey]);
@@ -453,6 +692,7 @@ export function useMultiplayer(
     gameStateRef.current = committed;
     setGameState(committed);
     broadcastState(committed);
+    persistHostLobby();
     try {
       if (committed.phase === 'game-end') {
         sessionStorage.removeItem(hostStateKey);
@@ -461,7 +701,7 @@ export function useMultiplayer(
       }
     } catch { /* melhor esforço */ }
     scheduleBotRef.current(committed);
-  }, [broadcastState, hostStateKey]);
+  }, [broadcastState, hostStateKey, persistHostLobby]);
 
   const setPlayerConnected = useCallback((playerId: number, connected: boolean) => {
     if (!isHostRef.current) return;
@@ -723,6 +963,140 @@ export function useMultiplayer(
 
   useEffect(() => { scheduleBotRef.current = scheduleBot; }, [scheduleBot]);
 
+  const closeHostPeer = useCallback((playerId: number) => {
+    const peer = hostPeersRef.current.get(playerId);
+    if (!peer) return;
+    hostPeersRef.current.delete(playerId);
+    void supabase.removeChannel(peer.channel);
+  }, []);
+
+  const appendChat = useCallback((message: ChatMessage) => {
+    setChatMessages((previous) => previous.some((item) => item.id === message.id)
+      ? previous
+      : [...previous.slice(-99), message]);
+  }, []);
+
+  const appendReaction = useCallback((reaction: Reaction) => {
+    setReactions((previous) => previous.some((item) => item.id === reaction.id)
+      ? previous
+      : [...previous.slice(-24), reaction]);
+  }, []);
+
+  const publishChat = useCallback((playerId: number, rawText: string) => {
+    if (!isHostRef.current || !chatRateGuardRef.current.accept(String(playerId)).ok) return;
+    const text = normalizeRoomText(rawText, 200);
+    const player = lobbyPlayersRef.current.find((candidate) => candidate.id === playerId)
+      ?? hostGameRef.current?.players.find((candidate) => candidate.id === playerId);
+    if (!text || !player) return;
+    const message: ChatMessage = {
+      id: createRoomId('chat'),
+      playerId,
+      name: player.name,
+      text,
+      ts: Date.now(),
+    };
+    appendChat(message);
+    for (const peer of hostPeersRef.current.values()) {
+      void sendPrivateToPeer(peer, 'chat', message);
+    }
+  }, [appendChat, sendPrivateToPeer]);
+
+  const publishReaction = useCallback((playerId: number, rawEmoji: string) => {
+    if (!isHostRef.current || !reactionRateGuardRef.current.accept(String(playerId)).ok) return;
+    const emoji = normalizeReaction(rawEmoji);
+    const player = lobbyPlayersRef.current.find((candidate) => candidate.id === playerId)
+      ?? hostGameRef.current?.players.find((candidate) => candidate.id === playerId);
+    if (!emoji || !player) return;
+    const thrown = /^throw:(?:tomate|sapato|rosa):(\d{1,6})$/u.exec(emoji);
+    if (thrown) {
+      const targetId = Number(thrown[1]);
+      const targetExists = lobbyPlayersRef.current.some((candidate) => candidate.id === targetId)
+        || Boolean(hostGameRef.current?.players.some((candidate) => candidate.id === targetId));
+      if (!targetExists) return;
+    }
+    const reaction: Reaction = {
+      id: createRoomId('reaction'),
+      emoji,
+      name: player.name,
+      playerId,
+      ts: Date.now(),
+    };
+    appendReaction(reaction);
+    for (const peer of hostPeersRef.current.values()) {
+      void sendPrivateToPeer(peer, 'reaction', reaction);
+    }
+  }, [appendReaction, sendPrivateToPeer]);
+
+  const applyAuthenticatedRequest = useCallback((peer: HostPeer, value: AuthenticatedRequest) => {
+    if (!isHostRef.current || value.token !== peer.token) return;
+    if (acceptedRequestIdsRef.current.has(value.requestId)) return;
+    acceptedRequestIdsRef.current.add(value.requestId);
+    if (acceptedRequestIdsRef.current.size > 512) {
+      const oldest = acceptedRequestIdsRef.current.values().next().value;
+      if (typeof oldest === 'string') acceptedRequestIdsRef.current.delete(oldest);
+    }
+
+    const request = value.request;
+    cancelDisconnectTimer(peer.playerId);
+    if (request.type === 'request_state') {
+      setPlayerConnected(peer.playerId, true);
+      const state = hostGameRef.current;
+      if (state) {
+        void sendPrivateToPeer(peer, 'game_state', {
+          state: redactStateFor(state, peer.playerId),
+          seatLedger: seatLedgerRef.current,
+        } satisfies PrivateStatePayload, state.stateRevision ?? 0);
+      }
+      broadcastLobby(lobbyPlayersRef.current);
+      return;
+    }
+    if (request.type === 'action') {
+      applyHostAction(request.action, peer.playerId);
+      return;
+    }
+    if (request.type === 'chat') {
+      publishChat(peer.playerId, request.text);
+      return;
+    }
+    if (request.type === 'reaction') {
+      publishReaction(peer.playerId, request.emoji);
+      return;
+    }
+    if (request.type === 'ready') {
+      if (request.lobbySeq >= consentEpochRef.current) {
+        applyLobbyReady(peer.playerId, request.ready);
+      }
+      return;
+    }
+    if (request.type === 'appearance') {
+      applyLobbyAppearance(peer.playerId, request.appearance);
+      return;
+    }
+
+    closeHostPeer(peer.playerId);
+    const currentGame = hostGameRef.current;
+    const gameOn = !!currentGame && currentGame.phase !== 'setup' && currentGame.phase !== 'game-end';
+    if (request.scope === 'lobby' && !gameOn) {
+      seatLedgerRef.current = seatLedgerRef.current.filter((entry) => entry.playerId !== peer.playerId);
+      const updated = lobbyPlayersRef.current.filter((player) => player.id !== peer.playerId);
+      commitLobby(updated, { countdownEndsAt: null });
+      return;
+    }
+    setPlayerConnected(peer.playerId, false);
+  }, [
+    applyHostAction,
+    applyLobbyAppearance,
+    applyLobbyReady,
+    broadcastLobby,
+    cancelDisconnectTimer,
+    closeHostPeer,
+    commitLobby,
+    publishChat,
+    publishReaction,
+    sendPrivateToPeer,
+    setPlayerConnected,
+  ]);
+
   /**
    * O host saiu. Entre os presentes, quem entrou primeiro assume a mesa.
    *
@@ -750,11 +1124,21 @@ export function useMultiplayer(
     const successor = Math.min(...present);
     if (successor !== myId) return;
 
+    const gs = gameStateRef.current;
+    const gameOn = !!gs && gs.phase !== 'game-end' && gs.phase !== 'setup';
     isHostRef.current = true;
     setIsHost(true);
     setBecameHost(true);
     hostIdRef.current = myId;
     setHostId(myId);
+    authorityEpochRef.current = createRoomId('authority');
+    hostConnectionIdRef.current = connectionIdRef.current;
+    hostPublicKeyRef.current = encryptionIdentityRef.current?.publicKey ?? null;
+    snapshotCursorRef.current = null;
+    if (guestPrivateChannelRef.current) {
+      void supabase.removeChannel(guestPrivateChannelRef.current);
+      guestPrivateChannelRef.current = null;
+    }
     try {
       sessionStorage.setItem('sp-host-room', roomCode);
       sessionStorage.setItem(pidKey, String(myId));
@@ -763,15 +1147,16 @@ export function useMultiplayer(
     // Bots viviam no host antigo; sem o estado deles, saem junto. O assento do
     // host antigo só fica reservado durante uma partida. No lobby ele libera o
     // banco, senão um pronto fantasma poderia bloquear o ritual para sempre.
-    const gs = gameStateRef.current;
-    const gameOn = !!gs && gs.phase !== 'game-end' && gs.phase !== 'setup';
     const lobby = lobbyPlayersRef.current.filter(
       (lp) => !lp.isBot && (gameOn || lp.id !== goneHostId)
     );
+    if (!gameOn) {
+      seatLedgerRef.current = seatLedgerRef.current.filter((entry) => entry.playerId !== goneHostId);
+    }
     nextPlayerIdRef.current = Math.max(nextPlayerIdRef.current, ...lobby.map((l) => l.id + 1), 1);
     commitLobby(lobby, { countdownEndsAt: null });
 
-    send('host_changed', { hostId: myId, name: playerName });
+    announceHostRef.current();
 
     if (gs && gameOn) {
       const players = gs.players
@@ -853,538 +1238,1201 @@ export function useMultiplayer(
         commitHostState({ ...withHands, czarId });
       }
     }
-  }, [roomCode, playerName, pidKey, send, commitLobby, commitHostState]);
+  }, [roomCode, pidKey, commitLobby, commitHostState]);
 
   useEffect(() => { maybePromoteSelfRef.current = maybePromoteSelf; }, [maybePromoteSelf]);
 
+  // Transporte v2: o canal de controle só descobre a autoridade e negocia
+  // credenciais. Todo conteúdo da mesa trafega em um canal cifrado por assento.
   useEffect(() => {
     if (!playerName) return;
 
     let disposed = false;
     let reconnectAttempts = 0;
+    let reconnectStartedAt = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let retryInterval: ReturnType<typeof setInterval> | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let joinRetryTimer: ReturnType<typeof setInterval> | null = null;
+    let joinTimeout: ReturnType<typeof setTimeout> | null = null;
+    let connect: () => void = () => {};
+
+    leavingRef.current = false;
 
     const clearJoinTimers = () => {
-      if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
-      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+      if (joinRetryTimer) clearInterval(joinRetryTimer);
+      if (joinTimeout) clearTimeout(joinTimeout);
+      joinRetryTimer = null;
+      joinTimeout = null;
     };
 
-    // Monta um canal novo com todos os handlers. Chamado no mount e a cada
-    // reconexão — canal do Supabase não é reutilizável depois de erro.
-    const connect = () => {
-      if (disposed) return;
+    const closeGuestPrivate = () => {
+      const privateChannel = guestPrivateChannelRef.current;
+      guestPrivateChannelRef.current = null;
+      if (privateChannel) void supabase.removeChannel(privateChannel);
+    };
 
-      const channel = supabase.channel(`sp-${roomCode}`);
-      channelRef.current = channel;
+    const closeAllHostPeers = () => {
+      const peers = [...hostPeersRef.current.values()];
+      hostPeersRef.current.clear();
+      for (const peer of peers) void supabase.removeChannel(peer.channel);
+    };
 
-      channel
-        // ── Mensagens de jogo ───────────────────────────────────────────
-        .on('broadcast', { event: 'join' }, ({ payload }) => {
-          if (!isHostRef.current) return;
-          const { clientId: joinerId, name, appearance: rawAppearance } = payload as {
-            clientId: string;
-            name: string;
-            appearance?: CultistAppearance;
-          };
-          const appearance = normalizeCultistAppearance(rawAppearance);
+    const persistCredential = (credential: SeatCredential) => {
+      credentialRef.current = credential;
+      myPlayerIdRef.current = credential.playerId;
+      setMyPlayerId(credential.playerId);
+      const identity = encryptionIdentityRef.current;
+      saveRoomSession(sessionStorage, sessionKey, roomCode, {
+        ...credential,
+        ...(identity ? { encryptionIdentity: identity.serialized } : {}),
+      });
+      try { sessionStorage.setItem(pidKey, String(credential.playerId)); } catch { /* melhor esforço */ }
+    };
 
-          // clientId repetido → só reenvia welcome + estado.
-          if (clientPlayerMapRef.current.has(joinerId)) {
-            const existingId = clientPlayerMapRef.current.get(joinerId)!;
-            cancelDisconnectTimer(existingId);
-            setPlayerConnected(existingId, true);
-            send('welcome', { clientId: joinerId, playerId: existingId });
-            broadcastLobby(lobbyPlayersRef.current);
-            if (hostGameRef.current) broadcastState(hostGameRef.current);
-            return;
-          }
+    const persistRoomContext = () => {
+      saveRoomSession(sessionStorage, contextKey, roomCode, {
+        hostId: hostIdRef.current,
+        gameId: gameIdRef.current,
+        seatLedger: seatLedgerRef.current,
+      } satisfies StoredRoomContext);
+    };
 
-          const gs = hostGameRef.current;
-          const gameOn = !!gs && gs.phase !== 'setup' && gs.phase !== 'game-end';
+    const clearCredential = (clearContext = false) => {
+      credentialRef.current = null;
+      myPlayerIdRef.current = null;
+      setMyPlayerId(null);
+      clearRoomSession(sessionStorage, sessionKey);
+      if (clearContext) clearRoomSession(sessionStorage, contextKey);
+      try { sessionStorage.removeItem(pidKey); } catch { /* melhor esforço */ }
+    };
 
-          // Reconexão de sessão nova (outra aba, celular que morreu): o mesmo
-          // nome ainda é dono do assento — devolve em vez de criar jogador.
-          const seat = gs?.players.find(
-            (p) => p.name === name && !p.eliminated && p.isHuman && p.connected === false
-          );
-          if (gameOn && seat) {
-            clientPlayerMapRef.current.set(joinerId, seat.id);
-            cancelDisconnectTimer(seat.id);
-            setPlayerConnected(seat.id, true);
-            if (!lobbyPlayersRef.current.some((lp) => lp.id === seat.id)) {
-              const back = [
-                ...lobbyPlayersRef.current,
-                normalizeLobbyPlayer({
-                  id: seat.id,
-                  name,
-                  ready: false,
-                  appearance: seat.appearance ?? appearance,
-                }),
-              ].sort((a, b) => a.id - b.id);
-              commitLobby(back, { countdownEndsAt: null });
-            }
-            send('welcome', { clientId: joinerId, playerId: seat.id });
-            if (hostGameRef.current) broadcastState(hostGameRef.current);
-            return;
-          }
+    const hostHelloPayload = () => {
+      const identity = encryptionIdentityRef.current;
+      if (!identity) return null;
+      return {
+        hostId: hostIdRef.current,
+        hostConnectionId: connectionIdRef.current,
+        publicKey: identity.publicKey,
+      };
+    };
 
-          // Reconexões recuperam o próprio assento acima; uma pessoa nova não
-          // pode criar o nono lugar, nem no lobby nem esperando a próxima rodada.
-          if (!hasAvailableSeat(lobbyPlayersRef.current.length)) {
-            send('join_rejected', { clientId: joinerId, reason: 'room_full' });
-            return;
-          }
+    const sendHostHello = (kind: 'host_hello' | 'host_changed' = 'host_hello') => {
+      if (!isHostRef.current) return;
+      const hello = hostHelloPayload();
+      if (!hello) return;
+      sendControl(kind, hello, lobbySeqRef.current);
+    };
 
-          // Cara nova com jogo rolando — o host decide, e só senta na próxima
-          // rodada.
-          if (gameOn) {
-            setPendingJoins((prev) =>
-              prev.some((p) => p.clientId === joinerId)
-                ? prev
-                : [...prev, { clientId: joinerId, name, appearance }]
-            );
-            send('join_pending', { clientId: joinerId });
-            return;
-          }
+    const sendSecureControl = async (
+      handshake: PendingHandshake,
+      kind: 'welcome' | 'join_pending' | 'join_rejected',
+      payload: unknown
+    ) => {
+      const identity = encryptionIdentityRef.current;
+      if (!identity || !isHostRef.current) return false;
+      const inner = createRoomEnvelope(kind, payload, {
+        roomCode,
+        gameId: gameIdRef.current,
+        authorityEpoch: authorityEpochRef.current,
+        hostId: hostIdRef.current,
+        senderId: hostIdRef.current,
+        senderConnectionId: connectionIdRef.current,
+        revision: lobbySeqRef.current,
+      });
+      try {
+        const encrypted = await encryptFor(identity, handshake.publicKey, inner);
+        sendControl('secure_control', {
+          targetClientId: handshake.clientId,
+          targetConnectionId: handshake.connectionId,
+          encrypted,
+        }, lobbySeqRef.current);
+        return true;
+      } catch {
+        return false;
+      }
+    };
 
-          // Lobby — qualquer um senta.
-          const playerId = nextPlayerIdRef.current++;
-          const updated = [...lobbyPlayersRef.current, normalizeLobbyPlayer({
-            id: playerId,
-            name,
-            ready: false,
-            appearance,
-          })];
-          commitLobby(updated, { countdownEndsAt: null });
+    const acceptLobby = (envelope: RoomEnvelope) => {
+      if (!isRecord(envelope.payload)) return;
+      const payload = envelope.payload;
+      if (!Array.isArray(payload.players) || !Number.isSafeInteger(payload.seq)) return;
+      const validPlayers = payload.players.every((candidate) =>
+        isRecord(candidate)
+        && Number.isSafeInteger(candidate.id)
+        && Number(candidate.id) >= 0
+        && typeof candidate.name === 'string'
+        && candidate.name.length >= 1
+        && candidate.name.length <= 28
+        && typeof candidate.ready === 'boolean'
+      );
+      if (!validPlayers || Number(payload.seq) <= lastLobbySeqRef.current) return;
+      const normalizedPlayers = normalizeLobbyPlayers(payload.players as LobbyPlayer[]);
+      const normalizedRules = normalizeLobbyRules(payload.rules);
+      const normalizedCountdown = typeof payload.countdownEndsAt === 'number'
+        && Number.isFinite(payload.countdownEndsAt)
+        ? payload.countdownEndsAt
+        : null;
+      const ledger = normalizeSeatLedger(payload.seatLedger);
 
-          clientPlayerMapRef.current.set(joinerId, playerId);
-          send('welcome', { clientId: joinerId, playerId });
-          if (hostGameRef.current) broadcastState(hostGameRef.current);
+      lastLobbySeqRef.current = Number(payload.seq);
+      lobbySeqRef.current = Math.max(lobbySeqRef.current, Number(payload.seq));
+      lobbyPlayersRef.current = normalizedPlayers;
+      lobbyRulesRef.current = normalizedRules;
+      countdownEndsAtRef.current = normalizedCountdown;
+      seatLedgerRef.current = ledger;
+      persistRoomContext();
+      setLobbyPlayers(normalizedPlayers);
+      setLobbyRules(normalizedRules);
+      setCountdownEndsAt(normalizedCountdown);
+      const own = normalizedPlayers.find((player) => player.id === myPlayerIdRef.current);
+      if (own) localAppearanceRef.current = own.appearance;
+    };
+
+    const acceptPrivateEnvelope = (envelope: RoomEnvelope) => {
+      if (envelope.kind === 'lobby') {
+        acceptLobby(envelope);
+        return;
+      }
+      if (envelope.kind === 'game_state') {
+        if (!isRecord(envelope.payload) || !isGameStateSnapshot(envelope.payload.state)) return;
+        const state = envelope.payload.state;
+        if ((state.stateRevision ?? -1) !== envelope.revision) return;
+        const cursor = cursorFromEnvelope(envelope);
+        if (!cursor || !shouldAcceptSnapshot(snapshotCursorRef.current, cursor)) return;
+        snapshotCursorRef.current = cursor;
+        gameIdRef.current = cursor.gameId;
+        seatLedgerRef.current = normalizeSeatLedger(envelope.payload.seatLedger);
+        persistRoomContext();
+        gameStateRef.current = state;
+        setGameState(state);
+        return;
+      }
+      if (envelope.kind === 'chat') {
+        if (!isRecord(envelope.payload)) return;
+        const payload = envelope.payload;
+        const text = normalizeRoomText(payload.text, 200);
+        if (
+          !isRoomId(payload.id)
+          || !Number.isSafeInteger(payload.playerId)
+          || typeof payload.name !== 'string'
+          || payload.name.length > 28
+          || typeof payload.ts !== 'number'
+          || !text
+        ) return;
+        appendChat({
+          id: payload.id,
+          playerId: Number(payload.playerId),
+          name: payload.name,
+          text,
+          ts: payload.ts,
+        });
+        return;
+      }
+      if (envelope.kind === 'reaction') {
+        if (!isRecord(envelope.payload)) return;
+        const payload = envelope.payload;
+        const emoji = normalizeReaction(payload.emoji);
+        if (
+          !isRoomId(payload.id)
+          || !Number.isSafeInteger(payload.playerId)
+          || typeof payload.name !== 'string'
+          || payload.name.length > 28
+          || typeof payload.ts !== 'number'
+          || !emoji
+        ) return;
+        appendReaction({
+          id: payload.id,
+          playerId: Number(payload.playerId),
+          name: payload.name,
+          emoji,
+          ts: payload.ts,
+        });
+        return;
+      }
+      if (envelope.kind === 'kicked') {
+        clearCredential(true);
+        closeGuestPrivate();
+        setWasKicked(true);
+      }
+    };
+
+    const installGuestSender = () => {
+      sendSecureRequestRef.current = async (request: SecureClientRequest) => {
+        const identity = encryptionIdentityRef.current;
+        const hostPublicKey = hostPublicKeyRef.current;
+        const credential = credentialRef.current;
+        const privateChannel = guestPrivateChannelRef.current;
+        if (
+          !identity
+          || !hostPublicKey
+          || !credential
+          || !privateChannel
+          || (leavingRef.current && request.type !== 'leave')
+        ) {
+          return false;
+        }
+        const authenticated: AuthenticatedRequest = {
+          requestId: createRoomId('request'),
+          token: credential.token,
+          request,
+        };
+        const envelope = createRoomEnvelope('client_request', authenticated, {
+          roomCode,
+          gameId: gameIdRef.current,
+          authorityEpoch: authorityEpochRef.current,
+          hostId: hostIdRef.current,
+          senderId: credential.playerId,
+          senderConnectionId: connectionIdRef.current,
+        });
+        try {
+          const encrypted = await encryptFor(identity, hostPublicKey, envelope);
+          const status = await privateChannel.send({
+            type: 'broadcast',
+            event: 'secure',
+            payload: encrypted,
+          });
+          return status === 'ok';
+        } catch {
+          return false;
+        }
+      };
+    };
+
+    const openGuestPrivate = async (welcome: ReturnType<typeof parseSecureWelcome>) => {
+      if (!welcome || disposed || isHostRef.current) return;
+      if (
+        welcome.clientId !== clientIdRef.current
+        || welcome.connectionId !== connectionIdRef.current
+        || welcome.authorityEpoch !== authorityEpochRef.current
+        || welcome.hostConnectionId !== hostConnectionIdRef.current
+        || !welcome.privateTopic.startsWith('spv2-')
+      ) return;
+
+      closeGuestPrivate();
+      const identity = encryptionIdentityRef.current;
+      const hostPublicKey = hostPublicKeyRef.current;
+      if (!identity || !hostPublicKey) return;
+
+      const privateChannel = supabase.channel(welcome.privateTopic);
+      guestPrivateChannelRef.current = privateChannel;
+      privateChannel
+        .on('broadcast', { event: 'secure' }, ({ payload }) => {
+          if (guestPrivateChannelRef.current !== privateChannel || !isEncryptedMessage(payload)) return;
+          void decryptFrom(identity, hostPublicKey, payload)
+            .then((value) => parseRoomEnvelope(value, {
+              roomCode,
+              authorityEpoch: authorityEpochRef.current,
+              hostId: hostIdRef.current,
+              senderId: hostIdRef.current,
+              senderConnectionId: hostConnectionIdRef.current,
+              kinds: ['lobby', 'game_state', 'chat', 'reaction', 'kicked'],
+            }))
+            .then((envelope) => { if (envelope) acceptPrivateEnvelope(envelope); })
+            .catch(() => {});
         })
-        .on('broadcast', { event: 'join_pending' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          if ((payload as { clientId: string }).clientId === clientIdRef.current) {
-            setAwaitingApproval(true);
-          }
-        })
-        .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          if ((payload as { clientId: string }).clientId === clientIdRef.current) {
-            setAwaitingApproval(false);
-            setJoinRejected(true);
-          }
-        })
-        .on('broadcast', { event: 'welcome' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          const { clientId: targetClient, playerId } = payload as { clientId: string; playerId: number };
-          if (targetClient === clientIdRef.current) {
-            myPlayerIdRef.current = playerId;
-            setMyPlayerId(playerId);
+        .subscribe((status) => {
+          if (guestPrivateChannelRef.current !== privateChannel || disposed) return;
+          if (status === 'SUBSCRIBED') {
+            seatLedgerRef.current = welcome.seatLedger;
+            persistCredential({ playerId: welcome.playerId, token: welcome.token });
+            persistRoomContext();
             setAwaitingApproval(false);
             setJoinRejected(false);
-            try { sessionStorage.setItem(pidKey, String(playerId)); } catch { /* melhor esforço */ }
             clearJoinTimers();
-            channel.track({
-              playerId,
+            installGuestSender();
+            setIsConnected(true);
+            setError(null);
+            void trackPresence(channelRef.current ?? privateChannel, {
+              playerId: welcome.playerId,
+              clientId: clientIdRef.current,
+              connectionId: connectionIdRef.current,
               name: playerName,
               appearance: localAppearanceRef.current,
             });
+            void sendSecureRequestRef.current({ type: 'request_state' });
+            return;
           }
-        })
-        .on('broadcast', { event: 'lobby' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          const { players, rules, countdownEndsAt: nextCountdown, seq } = payload as {
-            players: LobbyPlayer[];
-            rules?: LobbyRules;
-            countdownEndsAt?: number | null;
-            seq?: number;
-          };
-          if (seq !== undefined && seq <= lastLobbySeqRef.current) return;
-          if (seq !== undefined) {
-            lastLobbySeqRef.current = seq;
-            // Se este convidado virar host, continua a sequência antiga. Sem
-            // isso os demais rejeitariam o primeiro snapshot do sucessor.
-            lobbySeqRef.current = Math.max(lobbySeqRef.current, seq);
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            guestPrivateChannelRef.current = null;
+            setIsConnected(false);
+            void supabase.removeChannel(privateChannel);
+            window.setTimeout(() => {
+              if (!disposed && !leavingRef.current) sendRaw('host_probe', {
+                roomCode,
+                clientId: clientIdRef.current,
+                connectionId: connectionIdRef.current,
+              });
+            }, 500);
           }
-          const normalizedPlayers = normalizeLobbyPlayers(players);
-          const normalizedRules = normalizeLobbyRules(rules);
-          const normalizedCountdown = typeof nextCountdown === 'number' && Number.isFinite(nextCountdown)
-            ? nextCountdown
-            : null;
-          lobbyPlayersRef.current = normalizedPlayers;
-          lobbyRulesRef.current = normalizedRules;
-          countdownEndsAtRef.current = normalizedCountdown;
-          setLobbyPlayers(normalizedPlayers);
-          setLobbyRules(normalizedRules);
-          setCountdownEndsAt(normalizedCountdown);
-          const own = normalizedPlayers.find((player) => player.id === myPlayerIdRef.current);
-          if (own) localAppearanceRef.current = own.appearance;
-        })
-        .on('broadcast', { event: 'lobby_ready_request' }, ({ payload }) => {
-          if (!isHostRef.current) return;
-          const { playerId, ready, lobbySeq } = payload as {
-            playerId: number;
-            ready: boolean;
-            lobbySeq?: number;
-          };
-          if (!Number.isInteger(playerId) || typeof ready !== 'boolean') return;
-          // Consentimento enviado antes de uma troca de regras não vale para o
-          // ritual novo. Igualdade estrita aqui era fatal: qualquer commit de
-          // lobby no meio do caminho (presença, aparência com debounce,
-          // countdown) já tinha avançado a sequência, e o "pronto" do
-          // convidado era descartado em silêncio — a partida nunca começava.
-          if (lobbySeq !== undefined && lobbySeq < consentEpochRef.current) return;
-          applyLobbyReady(playerId, ready);
-        })
-        .on('broadcast', { event: 'lobby_appearance_request' }, ({ payload }) => {
-          if (!isHostRef.current) return;
-          const { playerId, appearance: requestedAppearance } = payload as {
-            playerId: number;
-            appearance: CultistAppearance;
-          };
-          if (!Number.isInteger(playerId)) return;
-          applyLobbyAppearance(playerId, requestedAppearance);
-        })
-        .on('broadcast', { event: 'game_state' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          const { state, target } = payload as { state: GameState; target?: number };
-          if (target !== undefined && target !== myPlayerIdRef.current) return;
-          const currentRevision = gameStateRef.current?.stateRevision ?? -1;
-          const incomingRevision = state.stateRevision ?? -1;
-          if (incomingRevision < currentRevision) return;
-          gameStateRef.current = state;
-          setGameState(state);
-        })
-        .on('broadcast', { event: 'action' }, ({ payload }) => {
-          if (!isHostRef.current) return;
-          const { action, fromPlayerId } = payload as { action: PlayerAction; fromPlayerId: number };
-          applyHostAction(action, fromPlayerId);
-        })
-        // Convidado pede o estado após reconectar — também prova de vida.
-        .on('broadcast', { event: 'request_state' }, ({ payload }) => {
-          if (!isHostRef.current) return;
-          const { playerId } = (payload ?? {}) as { playerId?: number };
-          if (playerId !== undefined) {
-            const knownSeat = lobbyPlayersRef.current.some((player) => player.id === playerId)
-              || Boolean(hostGameRef.current?.players.some((player) => player.id === playerId));
-            if (!knownSeat) {
-              for (const [knownClientId, knownPlayerId] of clientPlayerMapRef.current) {
-                if (knownPlayerId === playerId) clientPlayerMapRef.current.delete(knownClientId);
-              }
-              send('rejoin_required', { targetId: playerId });
-              return;
-            }
-            cancelDisconnectTimer(playerId);
-            setPlayerConnected(playerId, true);
+        });
+    };
+
+    const issueWelcome = async (
+      handshake: PendingHandshake,
+      playerId: number,
+      suppliedToken?: string
+    ) => {
+      const identity = encryptionIdentityRef.current;
+      if (!identity || disposed || !isHostRef.current) return false;
+      const token = suppliedToken ?? createSeatToken();
+      const tokenHash = await hashSeatToken(token);
+      const knownEntry = seatLedgerRef.current.find((entry) => entry.playerId === playerId);
+      const knownHash = knownEntry?.tokenHash;
+      if (knownHash && knownHash !== tokenHash) return false;
+      // Uma reconexão autenticada pode girar sua chave ECDH. Para conexões
+      // normais ela permanece estável no sessionStorage e ancora a eleição.
+      seatLedgerRef.current = [
+        ...seatLedgerRef.current.filter((entry) => entry.playerId !== playerId),
+        { playerId, tokenHash, publicKey: handshake.publicKey },
+      ];
+
+      closeHostPeer(playerId);
+      const privateTopic = createRoomId(`spv2-${roomCode}-seat`);
+      const privateChannel = supabase.channel(privateTopic);
+      const peer: HostPeer = {
+        playerId,
+        clientId: handshake.clientId,
+        connectionId: handshake.connectionId,
+        publicKey: handshake.publicKey,
+        token,
+        privateTopic,
+        channel: privateChannel,
+      };
+
+      privateChannel.on('broadcast', { event: 'secure' }, ({ payload }) => {
+        if (hostPeersRef.current.get(playerId)?.channel !== privateChannel) return;
+        if (!isEncryptedMessage(payload)) return;
+        void decryptFrom(identity, handshake.publicKey, payload)
+          .then((value) => parseRoomEnvelope(value, {
+            roomCode,
+            authorityEpoch: authorityEpochRef.current,
+            hostId: hostIdRef.current,
+            senderId: playerId,
+            senderConnectionId: handshake.connectionId,
+            kinds: ['client_request'],
+          }))
+          .then((envelope) => {
+            if (!envelope) return;
+            if (
+              envelope.gameId !== null
+              && gameIdRef.current !== null
+              && envelope.gameId !== gameIdRef.current
+            ) return;
+            const request = parseAuthenticatedRequest(envelope.payload);
+            if (request) applyAuthenticatedRequest(peer, request);
+          })
+          .catch(() => {});
+      });
+
+      const subscribed = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const settle = (result: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(result);
+        };
+        const timeout = setTimeout(() => settle(false), PRIVATE_SUBSCRIBE_TIMEOUT_MS);
+        privateChannel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') settle(true);
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            settle(false);
           }
-          if (hostGameRef.current) broadcastState(hostGameRef.current);
-          broadcastLobby(lobbyPlayersRef.current);
-          send('host_changed', { hostId: hostIdRef.current });
-        })
-        .on('broadcast', { event: 'rejoin_required' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          const { targetId } = (payload ?? {}) as { targetId?: number };
-          if (targetId !== myPlayerIdRef.current) return;
-          try { sessionStorage.removeItem(pidKey); } catch { /* melhor esforço */ }
-          myPlayerIdRef.current = null;
-          setMyPlayerId(null);
+        });
+      });
+      if (!subscribed || disposed || !isHostRef.current) {
+        void supabase.removeChannel(privateChannel);
+        return false;
+      }
+
+      hostPeersRef.current.set(playerId, peer);
+      const welcome = {
+        playerId,
+        token,
+        clientId: handshake.clientId,
+        connectionId: handshake.connectionId,
+        authorityEpoch: authorityEpochRef.current,
+        hostConnectionId: connectionIdRef.current,
+        privateTopic,
+        seatLedger: seatLedgerRef.current,
+      };
+      if (!await sendSecureControl(handshake, 'welcome', welcome)) {
+        closeHostPeer(playerId);
+        return false;
+      }
+
+      clientPlayerMapRef.current.set(handshake.clientId, playerId);
+      pendingHandshakesRef.current.delete(handshake.clientId);
+      cancelDisconnectTimer(playerId);
+      setPlayerConnected(playerId, true);
+      persistHostLobby();
+      broadcastLobby(lobbyPlayersRef.current);
+      const current = hostGameRef.current;
+      if (current) {
+        void sendPrivateToPeer(peer, 'game_state', {
+          state: redactStateFor(current, playerId),
+          seatLedger: seatLedgerRef.current,
+        } satisfies PrivateStatePayload, current.stateRevision ?? 0);
+      }
+      return true;
+    };
+
+    issueWelcomeRef.current = issueWelcome;
+    sendJoinStatusRef.current = async (targetClientId, kind, reason) => {
+      const handshake = pendingHandshakesRef.current.get(targetClientId);
+      if (!handshake) return;
+      await sendSecureControl(handshake, kind, {
+        clientId: targetClientId,
+        connectionId: handshake.connectionId,
+        reason,
+      });
+    };
+    announceHostRef.current = () => {
+      sendHostHello('host_changed');
+      sendHostHello('host_hello');
+      broadcastLobby(lobbyPlayersRef.current);
+      if (hostGameRef.current) broadcastState(hostGameRef.current);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      heartbeatRef.current = setInterval(() => sendHostHello(), CONTROL_HEARTBEAT_MS);
+    };
+
+    const sendJoinOrResume = async () => {
+      if (disposed || isHostRef.current || guestPrivateChannelRef.current) return;
+      const identity = encryptionIdentityRef.current;
+      const hostPublicKey = hostPublicKeyRef.current;
+      if (!identity || !hostPublicKey || !isRoomId(authorityEpochRef.current)) return;
+      const credential = credentialRef.current;
+      if (credential) {
+        const proof = {
+          ...credential,
+          clientId: clientIdRef.current,
+          connectionId: connectionIdRef.current,
+          authorityEpoch: authorityEpochRef.current,
+        };
+        try {
+          const encrypted = await encryptFor(identity, hostPublicKey, proof);
+          sendControl('resume_request', {
+            clientId: clientIdRef.current,
+            connectionId: connectionIdRef.current,
+            publicKey: identity.publicKey,
+            encrypted,
+          });
+        } catch {
+          setError('Este navegador não conseguiu proteger a sessão da sala.');
+        }
+        return;
+      }
+      sendControl('join_request', {
+        clientId: clientIdRef.current,
+        connectionId: connectionIdRef.current,
+        name: playerName,
+        appearance: localAppearanceRef.current,
+        publicKey: identity.publicKey,
+      });
+    };
+
+    const startJoinRetries = () => {
+      if (isHostRef.current || guestPrivateChannelRef.current) return;
+      void sendJoinOrResume();
+      if (!joinRetryTimer) {
+        joinRetryTimer = setInterval(() => { void sendJoinOrResume(); }, 2500);
+      }
+      if (!joinTimeout) {
+        joinTimeout = setTimeout(() => {
+          if (!guestPrivateChannelRef.current && !awaitingApprovalRef.current) {
+            setError('A sala não respondeu ainda. Continuo tentando reconectar…');
+          }
+        }, 30000);
+      }
+    };
+
+    const handleJoinRequest = async (envelope: RoomEnvelope) => {
+      if (!isHostRef.current) return;
+      const request = parseJoinRequest(envelope.payload);
+      if (!request || envelope.senderConnectionId !== request.connectionId || envelope.senderId !== 0) return;
+      pendingHandshakesRef.current.set(request.clientId, request);
+
+      const existingId = clientPlayerMapRef.current.get(request.clientId);
+      if (existingId !== undefined) {
+        const existingPeer = hostPeersRef.current.get(existingId);
+        if (existingPeer) await issueWelcome(request, existingId, existingPeer.token);
+        return;
+      }
+
+      const game = hostGameRef.current;
+      const gameOn = !!game && game.phase !== 'setup' && game.phase !== 'game-end';
+      if (!hasAvailableSeat(lobbyPlayersRef.current.length)) {
+        await sendJoinStatusRef.current(request.clientId, 'join_rejected', 'room_full');
+        return;
+      }
+      if (gameOn) {
+        setPendingJoins((previous) => previous.some((item) => item.clientId === request.clientId)
+          ? previous
+          : [...previous, {
+              clientId: request.clientId,
+              name: request.name,
+              appearance: request.appearance,
+            }]);
+        await sendJoinStatusRef.current(request.clientId, 'join_pending');
+        return;
+      }
+
+      const playerId = nextPlayerIdRef.current++;
+      const token = createSeatToken();
+      const tokenHash = await hashSeatToken(token);
+      seatLedgerRef.current = [
+        ...seatLedgerRef.current,
+        { playerId, tokenHash, publicKey: request.publicKey },
+      ];
+      clientPlayerMapRef.current.set(request.clientId, playerId);
+      const newcomer = normalizeLobbyPlayer({
+        id: playerId,
+        name: request.name,
+        ready: false,
+        appearance: request.appearance,
+      });
+      commitLobby([...lobbyPlayersRef.current, newcomer], { countdownEndsAt: null });
+      const accepted = await issueWelcome(request, playerId, token);
+      if (!accepted) {
+        clientPlayerMapRef.current.delete(request.clientId);
+        seatLedgerRef.current = seatLedgerRef.current.filter((entry) => entry.playerId !== playerId);
+        commitLobby(lobbyPlayersRef.current.filter((player) => player.id !== playerId), {
+          countdownEndsAt: null,
+        });
+      }
+    };
+
+    const handleResumeRequest = async (envelope: RoomEnvelope) => {
+      if (!isHostRef.current) return;
+      const request = parseResumeRequest(envelope.payload);
+      const identity = encryptionIdentityRef.current;
+      if (!request || !identity || envelope.senderConnectionId !== request.connectionId) return;
+      let proof: ReturnType<typeof parseResumeProof> = null;
+      try {
+        proof = parseResumeProof(await decryptFrom(identity, request.publicKey, request.encrypted));
+      } catch {
+        return;
+      }
+      if (
+        !proof
+        || proof.clientId !== request.clientId
+        || proof.connectionId !== request.connectionId
+        || proof.authorityEpoch !== authorityEpochRef.current
+        || envelope.senderId !== proof.playerId
+      ) return;
+
+      const gamePlayer = hostGameRef.current?.players.find((player) =>
+        player.id === proof!.playerId && player.isHuman && !player.eliminated
+      );
+      const lobbyPlayer = lobbyPlayersRef.current.find((player) => player.id === proof!.playerId);
+      const credentialIsValid = await verifySeatToken(
+        proof.playerId,
+        proof.token,
+        seatLedgerRef.current
+      );
+      if (!credentialIsValid || (!gamePlayer && !lobbyPlayer)) {
+        const fallback: PendingHandshake = {
+          clientId: request.clientId,
+          connectionId: request.connectionId,
+          publicKey: request.publicKey,
+          name: lobbyPlayer?.name ?? gamePlayer?.name ?? playerName,
+          appearance: lobbyPlayer?.appearance
+            ?? gamePlayer?.appearance
+            ?? localAppearanceRef.current,
+        };
+        pendingHandshakesRef.current.set(request.clientId, fallback);
+        await sendJoinStatusRef.current(request.clientId, 'join_rejected', 'session_invalid');
+        return;
+      }
+
+      const handshake: PendingHandshake = {
+        clientId: request.clientId,
+        connectionId: request.connectionId,
+        publicKey: request.publicKey,
+        name: lobbyPlayer?.name ?? gamePlayer!.name,
+        appearance: lobbyPlayer?.appearance
+          ?? gamePlayer?.appearance
+          ?? localAppearanceRef.current,
+      };
+      pendingHandshakesRef.current.set(request.clientId, handshake);
+      clientPlayerMapRef.current.set(request.clientId, proof.playerId);
+      if (!lobbyPlayer && gamePlayer) {
+        commitLobby([
+          ...lobbyPlayersRef.current,
+          normalizeLobbyPlayer({
+            id: gamePlayer.id,
+            name: gamePlayer.name,
+            ready: false,
+            appearance: gamePlayer.appearance,
+          }),
+        ].sort((left, right) => left.id - right.id), { countdownEndsAt: null });
+      }
+      await issueWelcome(handshake, proof.playerId, proof.token);
+    };
+
+    const adoptAuthority = (
+      envelope: RoomEnvelope,
+      hello: NonNullable<ReturnType<typeof parseHostHello>>
+    ) => {
+      const authorityChanged = envelope.authorityEpoch !== authorityEpochRef.current
+        || hello.hostConnectionId !== hostConnectionIdRef.current
+        || hello.hostId !== hostIdRef.current;
+      if (authorityChanged) {
+        closeGuestPrivate();
+        snapshotCursorRef.current = null;
+      }
+      pendingAuthorityRef.current = null;
+      authorityEpochRef.current = envelope.authorityEpoch;
+      hostIdRef.current = hello.hostId;
+      hostConnectionIdRef.current = hello.hostConnectionId;
+      hostPublicKeyRef.current = hello.publicKey;
+      if (envelope.gameId) gameIdRef.current = envelope.gameId;
+      setHostId(hello.hostId);
+      persistRoomContext();
+
+      if (isHostRef.current && hello.hostId !== myPlayerIdRef.current) {
+        isHostRef.current = false;
+        setIsHost(false);
+        closeAllHostPeers();
+        clearBotTimers();
+        if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+        try { sessionStorage.removeItem('sp-host-room'); } catch { /* melhor esforço */ }
+      }
+      startJoinRetries();
+      return true;
+    };
+
+    const challengeAuthority = async (
+      envelope: RoomEnvelope,
+      hello: NonNullable<ReturnType<typeof parseHostHello>>
+    ) => {
+      const identity = encryptionIdentityRef.current;
+      if (!identity || disposed) return false;
+      const currentChallenge = pendingAuthorityRef.current;
+      if (
+        currentChallenge
+        && currentChallenge.envelope.authorityEpoch === envelope.authorityEpoch
+        && currentChallenge.hello.hostId === hello.hostId
+        && currentChallenge.hello.hostConnectionId === hello.hostConnectionId
+        && samePublicKey(currentChallenge.hello.publicKey, hello.publicKey)
+        && Date.now() - currentChallenge.challengedAt < 2_000
+      ) return true;
+
+      const challengeNonce = createRoomId('challenge');
+      const claim = {
+        nonce: challengeNonce,
+        targetHostId: hello.hostId,
+        authorityEpoch: envelope.authorityEpoch,
+        hostConnectionId: hello.hostConnectionId,
+        clientId: clientIdRef.current,
+        connectionId: connectionIdRef.current,
+      };
+      try {
+        const encrypted = await encryptFor(identity, hello.publicKey, claim);
+        if (disposed) return false;
+        pendingAuthorityRef.current = {
+          envelope,
+          hello,
+          challengeNonce,
+          challengedAt: Date.now(),
+        };
+        const challengeEnvelope = createRoomEnvelope('host_challenge', {
+          targetHostId: hello.hostId,
+          clientId: clientIdRef.current,
+          connectionId: connectionIdRef.current,
+          publicKey: identity.publicKey,
+          encrypted,
+        }, {
+          roomCode,
+          gameId: envelope.gameId,
+          authorityEpoch: envelope.authorityEpoch,
+          hostId: hello.hostId,
+          senderId: credentialRef.current?.playerId ?? 0,
+          senderConnectionId: connectionIdRef.current,
+          revision: envelope.revision,
+        });
+        sendRaw('room', challengeEnvelope);
+        window.setTimeout(() => {
+          if (
+            disposed
+            || pendingAuthorityRef.current?.challengeNonce !== challengeNonce
+          ) return;
+          pendingAuthorityRef.current = null;
+          sendRaw('host_probe', {
+            roomCode,
+            clientId: clientIdRef.current,
+            connectionId: connectionIdRef.current,
+          });
+        }, 2_500);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const acceptAuthority = (envelope: RoomEnvelope) => {
+      const hello = parseHostHello(envelope.payload);
+      if (
+        !hello
+        || hello.hostId !== envelope.hostId
+        || hello.hostId !== envelope.senderId
+        || hello.hostConnectionId !== envelope.senderConnectionId
+      ) return false;
+      if (isHostRef.current && hello.hostId === hostIdRef.current) return false;
+
+      const alreadyAccepted = envelope.authorityEpoch === authorityEpochRef.current
+        && hello.hostId === hostIdRef.current
+        && hello.hostConnectionId === hostConnectionIdRef.current
+        && samePublicKey(hello.publicKey, hostPublicKeyRef.current);
+      if (alreadyAccepted) {
+        startJoinRetries();
+        return true;
+      }
+
+      const knownHost = lobbyPlayersRef.current.some((player) => player.id === hello.hostId);
+      const mayAdopt = authorityEpochRef.current === 'authority-pending'
+        || myPlayerIdRef.current === null
+        || hello.hostId === hostIdRef.current
+        || (envelope.kind === 'host_changed' && knownHost);
+      if (!mayAdopt) return false;
+
+      const anchoredPublicKey = seatLedgerRef.current.find(
+        (entry) => entry.playerId === hello.hostId
+      )?.publicKey;
+      if (anchoredPublicKey && !samePublicKey(anchoredPublicKey, hello.publicKey)) return false;
+
+      // A primeira entrada na sala ainda depende do código compartilhado. Depois
+      // das boas-vindas, cada assento recebe as chaves públicas da mesa e toda
+      // troca/reconexão de host precisa provar posse da chave privada ancorada.
+      if (!anchoredPublicKey) return adoptAuthority(envelope, hello);
+      void challengeAuthority(envelope, hello);
+      return true;
+    };
+
+    const handleHostChallenge = async (envelope: RoomEnvelope) => {
+      if (
+        !isHostRef.current
+        || envelope.authorityEpoch !== authorityEpochRef.current
+        || envelope.hostId !== hostIdRef.current
+      ) return;
+      const request = parseHostChallenge(envelope.payload);
+      const identity = encryptionIdentityRef.current;
+      if (
+        !request
+        || !identity
+        || request.targetHostId !== hostIdRef.current
+        || request.connectionId !== envelope.senderConnectionId
+      ) return;
+      let claim: ReturnType<typeof parseHostChallengeClaim> = null;
+      try {
+        claim = parseHostChallengeClaim(await decryptFrom(identity, request.publicKey, request.encrypted));
+      } catch {
+        return;
+      }
+      if (
+        !claim
+        || claim.targetHostId !== hostIdRef.current
+        || claim.authorityEpoch !== authorityEpochRef.current
+        || claim.hostConnectionId !== connectionIdRef.current
+        || claim.clientId !== request.clientId
+        || claim.connectionId !== request.connectionId
+      ) return;
+      const proof = {
+        ...claim,
+        hostId: hostIdRef.current,
+        targetClientId: request.clientId,
+        targetConnectionId: request.connectionId,
+      };
+      try {
+        const encrypted = await encryptFor(identity, request.publicKey, proof);
+        sendControl('host_proof', {
+          targetClientId: request.clientId,
+          targetConnectionId: request.connectionId,
+          encrypted,
+        }, envelope.revision, envelope.gameId);
+      } catch {
+        // O próximo heartbeat permite ao convidado repetir o desafio.
+      }
+    };
+
+    const handleHostProof = async (envelope: RoomEnvelope) => {
+      if (!isRecord(envelope.payload)) return;
+      const pending = pendingAuthorityRef.current;
+      const identity = encryptionIdentityRef.current;
+      if (
+        !pending
+        || !identity
+        || envelope.payload.targetClientId !== clientIdRef.current
+        || envelope.payload.targetConnectionId !== connectionIdRef.current
+        || !isEncryptedMessage(envelope.payload.encrypted)
+        || envelope.authorityEpoch !== pending.envelope.authorityEpoch
+        || envelope.hostId !== pending.hello.hostId
+        || envelope.senderId !== pending.hello.hostId
+        || envelope.senderConnectionId !== pending.hello.hostConnectionId
+      ) return;
+      let proof: ReturnType<typeof parseHostProof> = null;
+      try {
+        proof = parseHostProof(await decryptFrom(
+          identity,
+          pending.hello.publicKey,
+          envelope.payload.encrypted
+        ));
+      } catch {
+        return;
+      }
+      if (
+        !proof
+        || proof.nonce !== pending.challengeNonce
+        || proof.hostId !== pending.hello.hostId
+        || proof.targetHostId !== pending.hello.hostId
+        || proof.authorityEpoch !== pending.envelope.authorityEpoch
+        || proof.hostConnectionId !== pending.hello.hostConnectionId
+        || proof.clientId !== clientIdRef.current
+        || proof.connectionId !== connectionIdRef.current
+        || proof.targetClientId !== clientIdRef.current
+        || proof.targetConnectionId !== connectionIdRef.current
+      ) return;
+      adoptAuthority(pending.envelope, pending.hello);
+    };
+
+    const handleSecureControl = async (envelope: RoomEnvelope) => {
+      if (isHostRef.current || !isRecord(envelope.payload)) return;
+      if (
+        envelope.payload.targetClientId !== clientIdRef.current
+        || envelope.payload.targetConnectionId !== connectionIdRef.current
+        || !isEncryptedMessage(envelope.payload.encrypted)
+      ) return;
+      const identity = encryptionIdentityRef.current;
+      const hostPublicKey = hostPublicKeyRef.current;
+      if (!identity || !hostPublicKey) return;
+      let inner: RoomEnvelope | null = null;
+      try {
+        inner = parseRoomEnvelope(await decryptFrom(identity, hostPublicKey, envelope.payload.encrypted), {
+          roomCode,
+          authorityEpoch: authorityEpochRef.current,
+          hostId: hostIdRef.current,
+          senderId: hostIdRef.current,
+          senderConnectionId: hostConnectionIdRef.current,
+          kinds: ['welcome', 'join_pending', 'join_rejected'],
+        });
+      } catch {
+        return;
+      }
+      if (!inner || !isRecord(inner.payload)) return;
+      if (inner.kind === 'join_pending') {
+        setAwaitingApproval(true);
+        clearJoinTimers();
+        return;
+      }
+      if (inner.kind === 'join_rejected') {
+        const reason = inner.payload.reason;
+        setAwaitingApproval(false);
+        if (reason === 'session_invalid') {
+          clearCredential();
           gameStateRef.current = null;
           setGameState(null);
-          send('join', {
-            clientId: clientIdRef.current,
-            name: playerName,
-            appearance: localAppearanceRef.current,
-          });
+          void sendJoinOrResume();
+          return;
+        }
+        setJoinRejected(true);
+        clearJoinTimers();
+        return;
+      }
+      const welcome = parseSecureWelcome(inner.payload);
+      if (welcome) await openGuestPrivate(welcome);
+    };
+
+    const handleControlEnvelope = (value: unknown) => {
+      const envelope = parseRoomEnvelope(value, { roomCode });
+      if (!envelope) return;
+      if (envelope.kind === 'host_hello' || envelope.kind === 'host_changed') {
+        acceptAuthority(envelope);
+        return;
+      }
+      if (envelope.kind === 'host_challenge') {
+        void handleHostChallenge(envelope);
+        return;
+      }
+      if (envelope.kind === 'host_proof') {
+        void handleHostProof(envelope);
+        return;
+      }
+      const fromCurrentHost = parseRoomEnvelope(value, {
+        roomCode,
+        authorityEpoch: authorityEpochRef.current,
+        hostId: hostIdRef.current,
+      });
+      if (envelope.kind === 'secure_control') {
+        if (fromCurrentHost) void handleSecureControl(fromCurrentHost);
+        return;
+      }
+      if (!isHostRef.current) return;
+      const forCurrentAuthority = parseRoomEnvelope(value, {
+        roomCode,
+        authorityEpoch: authorityEpochRef.current,
+        hostId: hostIdRef.current,
+        kinds: ['join_request', 'resume_request'],
+      });
+      if (!forCurrentAuthority) return;
+      if (forCurrentAuthority.kind === 'join_request') void handleJoinRequest(forCurrentAuthority);
+      if (forCurrentAuthority.kind === 'resume_request') void handleResumeRequest(forCurrentAuthority);
+    };
+
+    const scheduleReconnect = () => {
+      if (disposed || leavingRef.current || reconnectTimer) return;
+      reconnectAttempts += 1;
+      if (!reconnectStartedAt) reconnectStartedAt = Date.now();
+      if (Date.now() - reconnectStartedAt >= RECONNECT_GIVE_UP_MS) {
+        setError('A conexão está instável, mas a mesa continua tentando te trazer de volta…');
+      }
+      const delay = Math.min(750 * 2 ** Math.min(reconnectAttempts - 1, 4), 10_000);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
+
+    connect = () => {
+      if (disposed || leavingRef.current) return;
+      const previous = channelRef.current;
+      if (previous) void supabase.removeChannel(previous);
+      closeGuestPrivate();
+      if (isHostRef.current) closeAllHostPeers();
+
+      const channel = supabase.channel(`spv2-${roomCode}-control`, {
+        config: { presence: { key: connectionIdRef.current } },
+      });
+      channelRef.current = channel;
+      channel
+        .on('broadcast', { event: 'host_probe' }, ({ payload }) => {
+          if (!isHostRef.current || leavingRef.current || !isRecord(payload)) return;
+          if (
+            String(payload.roomCode).toUpperCase() !== roomCode.toUpperCase()
+            || !isRoomId(payload.connectionId)
+          ) return;
+          sendHostHello();
         })
-        // ── Chat ────────────────────────────────────────────────────────
-        .on('broadcast', { event: 'chat' }, ({ payload }) => {
-          setChatMessages((prev) => [...prev, payload as ChatMessage]);
+        .on('broadcast', { event: 'room' }, ({ payload }) => {
+          handleControlEnvelope(payload);
         })
-        // ── Reações-relâmpago (efêmeras, fora do estado do jogo) ────────
-        .on('broadcast', { event: 'reaction' }, ({ payload }) => {
-          setReactions((prev) => [...prev.slice(-24), payload as Reaction]);
-        })
-        // ── Kick / saída voluntária ─────────────────────────────────────
-        .on('broadcast', { event: 'kicked' }, ({ payload }) => {
-          if (isHostRef.current) return;
-          const { targetId } = payload as { targetId: number };
-          if (targetId === myPlayerIdRef.current) {
-            try { sessionStorage.removeItem(pidKey); } catch { /* melhor esforço */ }
-            setWasKicked(true);
-          }
-        })
-        .on('broadcast', { event: 'leave_lobby' }, ({ payload }) => {
-          if (!isHostRef.current) return;
-          const { playerId } = payload as { playerId: number };
-          const updated = lobbyPlayersRef.current.filter((p) => p.id !== playerId);
-          if (updated.length === lobbyPlayersRef.current.length) return;
-          commitLobby(updated, { countdownEndsAt: null });
-        })
-        .on('broadcast', { event: 'leave_game' }, ({ payload }) => {
-          if (!isHostRef.current) return;
-          const { playerId } = payload as { playerId: number };
-          cancelDisconnectTimer(playerId);
-          // O evento chega antes de o canal desaparecer da presença. Confere
-          // um instante depois; a queda normal mantém o grace period maior.
-          const timer = setTimeout(() => {
-            disconnectTimersRef.current.delete(playerId);
-            if (!isPlayerPresent(playerId)) setPlayerConnected(playerId, false);
-          }, 1000);
-          disconnectTimersRef.current.set(playerId, timer);
-        })
-        // ── Presença: detecta quedas inesperadas ────────────────────────
         .on('presence', { event: 'leave' }, ({ leftPresences }) => {
-          for (const p of leftPresences) {
-            const { playerId } = p as unknown as { playerId: number };
-            if (playerId === undefined) continue;
-
-            // Convidados vigiam o host: se a mesa perde o dono, o próximo da
-            // fila assume em vez de todo mundo encarar um tabuleiro congelado.
+          for (const rawPresence of leftPresences) {
+            const presence = rawPresence as unknown as { playerId?: number };
+            if (!Number.isSafeInteger(presence.playerId)) continue;
+            const playerId = Number(presence.playerId);
             if (!isHostRef.current) {
-              if (playerId === hostIdRef.current) {
-                cancelDisconnectTimer(playerId);
-                const t = setTimeout(() => {
-                  disconnectTimersRef.current.delete(playerId);
-                  if (isPlayerPresent(playerId)) return;
-                  maybePromoteSelfRef.current(playerId);
-                }, DISCONNECT_GRACE_MS);
-                disconnectTimersRef.current.set(playerId, t);
-              }
-              continue;
-            }
-
-            if (playerId === hostIdRef.current) continue;
-
-            const gs = hostGameRef.current;
-            // Sem jogo → libera o assento só depois da mesma tolerância a
-            // reconexões; `leave_lobby` continua sendo imediato.
-            if (!gs || gs.phase === 'setup') {
+              if (playerId !== hostIdRef.current) continue;
               cancelDisconnectTimer(playerId);
-              const markedUnready = lobbyPlayersRef.current.map((player) =>
-                player.id === playerId && !player.isBot
-                  ? { ...player, ready: false }
-                  : player
-              );
-              if (markedUnready.some((player, index) =>
-                player.ready !== lobbyPlayersRef.current[index]?.ready
-              )) {
-                commitLobby(markedUnready, { countdownEndsAt: null });
-              }
               const timer = setTimeout(() => {
                 disconnectTimersRef.current.delete(playerId);
-                if (isPlayerPresent(playerId)) return;
-                const updated = lobbyPlayersRef.current.filter((lp) => lp.id !== playerId);
-                if (updated.length === lobbyPlayersRef.current.length) return;
-                commitLobby(updated, { countdownEndsAt: null });
+                if (!isPlayerPresent(playerId)) maybePromoteSelfRef.current(playerId);
               }, DISCONNECT_GRACE_MS);
               disconnectTimersRef.current.set(playerId, timer);
               continue;
             }
-            if (gs.phase === 'game-end') continue;
-
-            const player = gs.players.find(pl => pl.id === playerId && !pl.eliminated);
-            if (!player) continue;
-
-            // Período de graça: conexão instável volta logo — não pausa a
-            // mesa por um soluço.
+            if (playerId === hostIdRef.current) continue;
             cancelDisconnectTimer(playerId);
             const timer = setTimeout(() => {
               disconnectTimersRef.current.delete(playerId);
               if (isPlayerPresent(playerId)) return;
-              setPlayerConnected(playerId, false);
+              const current = hostGameRef.current;
+              if (current && current.phase !== 'setup' && current.phase !== 'game-end') {
+                setPlayerConnected(playerId, false);
+                return;
+              }
+              // No lobby o assento permanece reservado para a credencial; só
+              // saída voluntária ou kick o libera. Uma oscilação não apaga ninguém.
+              const markedUnready = lobbyPlayersRef.current.map((player) =>
+                player.id === playerId && !player.isBot ? { ...player, ready: false } : player
+              );
+              commitLobby(markedUnready, { countdownEndsAt: null });
             }, DISCONNECT_GRACE_MS);
             disconnectTimersRef.current.set(playerId, timer);
           }
         })
         .on('presence', { event: 'join' }, ({ newPresences }) => {
-          for (const p of newPresences) {
-            const { playerId } = p as unknown as { playerId: number };
-            if (playerId === undefined) continue;
+          for (const rawPresence of newPresences) {
+            const presence = rawPresence as unknown as { playerId?: number };
+            if (!Number.isSafeInteger(presence.playerId)) continue;
+            const playerId = Number(presence.playerId);
             cancelDisconnectTimer(playerId);
-            if (!isHostRef.current && playerId === hostIdRef.current) {
-              send('request_state', { playerId: myPlayerIdRef.current });
-            }
-            if (isHostRef.current) {
+            if (isHostRef.current && playerId !== hostIdRef.current) {
               setPlayerConnected(playerId, true);
-              if (playerId !== hostIdRef.current) {
-                // Quem voltou pode ter perdido o anúncio da migração enquanto
-                // estava offline; reafirma quem é o host atual.
-                send('host_changed', { hostId: hostIdRef.current });
-              }
             }
-          }
-        })
-        // Novo host se anunciou — todo mundo segue, e o antigo (se voltar)
-        // para de achar que ainda manda na mesa.
-        .on('broadcast', { event: 'host_changed' }, ({ payload }) => {
-          const { hostId: newHostId } = payload as { hostId: number };
-          if (promotionTimerRef.current) clearTimeout(promotionTimerRef.current);
-          hostIdRef.current = newHostId;
-          setHostId(newHostId);
-          cancelDisconnectTimer(newHostId);
-          if (newHostId !== myPlayerIdRef.current && isHostRef.current) {
-            isHostRef.current = false;
-            setIsHost(false);
-            if (heartbeatRef.current) {
-              clearInterval(heartbeatRef.current);
-              heartbeatRef.current = null;
-            }
-            for (const timer of botTimersRef.current) clearTimeout(timer);
-            botTimersRef.current = [];
-            try { sessionStorage.removeItem('sp-host-room'); } catch { /* melhor esforço */ }
           }
         })
         .subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
+          if (channelRef.current !== channel || disposed) return;
+          const outcome = channelStatusOutcome(status, !leavingRef.current);
+          if (outcome === 'subscribed') {
             reconnectAttempts = 0;
-            setIsConnected(true);
+            reconnectStartedAt = 0;
             setError(null);
-
             if (isHostRef.current) {
-              channel.track({
+              setIsConnected(true);
+              void trackPresence(channel, {
                 playerId: hostIdRef.current,
+                clientId: clientIdRef.current,
+                connectionId: connectionIdRef.current,
                 name: playerName,
                 appearance: localAppearanceRef.current,
               });
-              if (hostGameRef.current) {
-                setPlayerConnected(hostIdRef.current, true);
-                if (hostGameRef.current) broadcastState(hostGameRef.current);
-                if (hostGameRef.current) scheduleBotRef.current(hostGameRef.current);
-              }
+              sendHostHello();
               broadcastLobby(lobbyPlayersRef.current);
-
-              // Heartbeat mantém o canal vivo e recupera convidados que
-              // reconectam sem precisar de re-join.
-              if (heartbeatRef.current) clearInterval(heartbeatRef.current);
-              heartbeatRef.current = setInterval(() => {
-                if (hostGameRef.current) broadcastState(hostGameRef.current);
-                else broadcastLobby(lobbyPlayersRef.current);
-              }, 12000);
-            } else {
-              if (myPlayerIdRef.current !== null) {
-                channel.track({
-                  playerId: myPlayerIdRef.current,
-                  name: playerName,
-                  appearance: localAppearanceRef.current,
-                });
-                send('request_state', { playerId: myPlayerIdRef.current });
-                return;
+              if (hostGameRef.current) {
+                broadcastState(hostGameRef.current);
+                scheduleBotRef.current(hostGameRef.current);
               }
-
-              const sendJoin = () => {
-                if (myPlayerIdRef.current !== null) return;
-                send('join', {
-                  clientId: clientIdRef.current,
-                  name: playerName,
-                  appearance: localAppearanceRef.current,
-                });
-              };
-              sendJoin();
-              if (retryInterval) clearInterval(retryInterval);
-              retryInterval = setInterval(sendJoin, 2000);
-              if (timeoutId) clearTimeout(timeoutId);
-              timeoutId = setTimeout(() => {
-                if (retryInterval) clearInterval(retryInterval);
-                // Esperar o host liberar a entrada não é falha de conexão.
-                if (myPlayerIdRef.current === null && !awaitingApprovalRef.current) {
-                  setError('Não deu pra entrar na sala. Confira o código e se o host está online.');
-                }
-              }, 30000);
+              if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+              heartbeatRef.current = setInterval(() => sendHostHello(), CONTROL_HEARTBEAT_MS);
+            } else {
+              setIsConnected(false);
+              void trackPresence(channel, {
+                clientId: clientIdRef.current,
+                connectionId: connectionIdRef.current,
+                name: playerName,
+              });
+              sendRaw('host_probe', {
+                roomCode,
+                clientId: clientIdRef.current,
+                connectionId: connectionIdRef.current,
+              });
             }
-          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-            // Não desiste: derruba o canal e reconstrói com backoff. Browser
-            // mobile mata o socket sempre que a aba vai pro fundo.
+            return;
+          }
+          if (outcome === 'reconnect') {
             setIsConnected(false);
-            if (disposed) return;
-
-            reconnectAttempts++;
-            if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-              setError('Sem conexão com a sala. Confira sua internet e recarregue a página.');
-              return;
-            }
-
             clearJoinTimers();
-            if (heartbeatRef.current) { clearInterval(heartbeatRef.current); heartbeatRef.current = null; }
-            supabase.removeChannel(channel);
-            if (channelRef.current === channel) channelRef.current = null;
-
-            const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 10000);
-            if (reconnectTimer) clearTimeout(reconnectTimer);
-            reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+            closeGuestPrivate();
+            if (isHostRef.current) closeAllHostPeers();
+            if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+            heartbeatRef.current = null;
+            channelRef.current = null;
+            void supabase.removeChannel(channel);
+            scheduleReconnect();
           }
         });
     };
 
-    connect();
-
-    // Reconecta na hora quando a aba volta pro primeiro plano.
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible' || disposed) return;
-      if (!isConnectedRef.current && !reconnectTimer) {
-        reconnectAttempts = 0;
-        if (channelRef.current) supabase.removeChannel(channelRef.current);
-        channelRef.current = null;
+    const start = async () => {
+      try {
+        let identity = encryptionIdentityRef.current;
+        if (!identity && restoredEncryptionIdentity) {
+          try {
+            identity = await importEncryptionIdentity(restoredEncryptionIdentity);
+          } catch {
+            // Sessão antiga ou chave rejeitada pelo navegador: a credencial de
+            // assento ainda permite autenticar e registrar uma chave nova.
+          }
+        }
+        identity ??= await createEncryptionIdentity();
+        if (disposed) return;
+        encryptionIdentityRef.current = identity;
+        if (isHostRef.current) {
+          hostPublicKeyRef.current = identity.publicKey;
+          hostConnectionIdRef.current = connectionIdRef.current;
+          let credential = credentialRef.current;
+          if (!credential || credential.playerId !== hostIdRef.current) {
+            credential = { playerId: hostIdRef.current, token: createSeatToken() };
+          }
+          persistCredential(credential);
+          const tokenHash = await hashSeatToken(credential.token);
+          seatLedgerRef.current = [
+            ...seatLedgerRef.current.filter((entry) => entry.playerId !== credential!.playerId),
+            { playerId: credential.playerId, tokenHash, publicKey: identity.publicKey },
+          ];
+          persistHostLobby();
+        }
+        installGuestSender();
         connect();
+      } catch {
+        setError('Criptografia segura indisponível neste navegador.');
       }
     };
+    void start();
+
+    const reconnectNow = () => {
+      if (disposed || leavingRef.current || document.visibilityState !== 'visible') return;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      reconnectAttempts = 0;
+      connect();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && !isConnectedRef.current) reconnectNow();
+    };
+    window.addEventListener('online', reconnectNow);
     document.addEventListener('visibilitychange', onVisible);
 
     const timersAtSetup = disconnectTimersRef.current;
     return () => {
       disposed = true;
+      window.removeEventListener('online', reconnectNow);
       document.removeEventListener('visibilitychange', onVisible);
       clearJoinTimers();
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (heartbeatRef.current) { clearInterval(heartbeatRef.current); heartbeatRef.current = null; }
-      for (const t of botTimersRef.current) clearTimeout(t);
-      botTimersRef.current = [];
-      for (const t of timersAtSetup.values()) clearTimeout(t);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+      sendSecureRequestRef.current = async () => false;
+      issueWelcomeRef.current = async () => false;
+      sendJoinStatusRef.current = async () => {};
+      announceHostRef.current = () => {};
+      pendingAuthorityRef.current = null;
+      closeGuestPrivate();
+      closeAllHostPeers();
+      for (const timer of timersAtSetup.values()) clearTimeout(timer);
       timersAtSetup.clear();
-      if (channelRef.current) supabase.removeChannel(channelRef.current);
+      const channel = channelRef.current;
       channelRef.current = null;
+      if (channel) void supabase.removeChannel(channel);
     };
-    // `isHost` fica de fora de propósito: handlers leem isHostRef, então a
-    // promoção no meio do jogo muda o comportamento sem derrubar o canal
-    // (o que perderia presença e o broadcast da promoção).
   }, [
-    roomCode, playerName, pidKey, send, broadcastState, broadcastLobby,
-    applyHostAction, cancelDisconnectTimer, isPlayerPresent, setPlayerConnected,
-    applyLobbyReady, applyLobbyAppearance, commitLobby,
+    appendChat,
+    appendReaction,
+    applyAuthenticatedRequest,
+    broadcastLobby,
+    broadcastState,
+    cancelDisconnectTimer,
+    clearBotTimers,
+    closeHostPeer,
+    commitLobby,
+    contextKey,
+    isPlayerPresent,
+    persistHostLobby,
+    pidKey,
+    playerName,
+    roomCode,
+    restoredEncryptionIdentity,
+    sendControl,
+    sendPrivateToPeer,
+    sendRaw,
+    sessionKey,
+    setPlayerConnected,
   ]);
 
   const sendChat = useCallback((text: string) => {
-    const msg: ChatMessage = {
-      id: clientIdRef.current + Date.now(),
-      playerId: myPlayerIdRef.current ?? 0,
-      name: playerName ?? '?',
-      text,
-      ts: Date.now(),
-    };
-    setChatMessages((prev) => [...prev, msg]);
-    send('chat', msg as unknown as Record<string, unknown>);
-  }, [playerName, send]);
+    const playerId = myPlayerIdRef.current;
+    if (playerId === null) return;
+    if (isHostRef.current) publishChat(playerId, text);
+    else void sendSecureRequestRef.current({ type: 'chat', text });
+  }, [publishChat]);
 
   const sendReaction = useCallback((emoji: string) => {
-    const r: Reaction = {
-      id: clientIdRef.current + Date.now() + Math.random().toString(36).slice(2, 6),
-      emoji,
-      name: playerName ?? '?',
-      playerId: myPlayerIdRef.current ?? 0,
-      ts: Date.now(),
-    };
-    setReactions((prev) => [...prev.slice(-24), r]);
-    send('reaction', r as unknown as Record<string, unknown>);
-  }, [playerName, send]);
+    const playerId = myPlayerIdRef.current;
+    if (playerId === null) return;
+    if (isHostRef.current) publishReaction(playerId, emoji);
+    else void sendSecureRequestRef.current({ type: 'reaction', emoji });
+  }, [publishReaction]);
 
   const sendAction = useCallback((action: PlayerAction) => {
-    if (isHost) {
+    if (isHostRef.current) {
       applyHostAction(action, myPlayerIdRef.current ?? 0);
     } else {
-      send('action', { action, fromPlayerId: myPlayerIdRef.current ?? 0 });
+      void sendSecureRequestRef.current({ type: 'action', action });
     }
-  }, [isHost, applyHostAction, send]);
+  }, [applyHostAction]);
 
   // Bots existem só no lobby do host; entram no jogo como assentos normais.
   const addBot = useCallback(() => {
@@ -1428,12 +2476,12 @@ export function useMultiplayer(
     setLobbyPlayers((prev) => prev.map((player) => player.id === playerId
       ? { ...player, ready }
       : player));
-    send('lobby_ready_request', {
-      playerId,
+    void sendSecureRequestRef.current({
+      type: 'ready',
       ready,
       lobbySeq: lastLobbySeqRef.current,
     });
-  }, [applyLobbyReady, send]);
+  }, [applyLobbyReady]);
 
   const setAppearance = useCallback((appearance: CultistAppearance) => {
     const playerId = myPlayerIdRef.current;
@@ -1459,13 +2507,15 @@ export function useMultiplayer(
       const atual = localAppearanceRef.current;
       void channelRef.current?.track({
         playerId,
+        clientId: clientIdRef.current,
+        connectionId: connectionIdRef.current,
         name: playerName ?? '?',
         appearance: atual,
       });
       if (isHostRef.current) applyLobbyAppearance(playerId, atual);
-      else send('lobby_appearance_request', { playerId, appearance: atual });
+      else void sendSecureRequestRef.current({ type: 'appearance', appearance: atual });
     }, 450);
-  }, [playerName, applyLobbyAppearance, send]);
+  }, [playerName, applyLobbyAppearance]);
 
   const updateLobbyRules = useCallback((patch: Partial<LobbyRules>) => {
     if (!isHostRef.current || hostGameRef.current) return;
@@ -1498,6 +2548,8 @@ export function useMultiplayer(
     }));
     countdownEndsAtRef.current = null;
     setCountdownEndsAt(null);
+    gameIdRef.current = createRoomId('game');
+    snapshotCursorRef.current = null;
     persistHostLobby();
     const custom = sanitizeCustomCards(customCardsRef.current);
     const rules = lobbyRulesRef.current;
@@ -1540,9 +2592,17 @@ export function useMultiplayer(
 
   // Host remove alguém de propósito (lobby ou meio do jogo).
   const kickPlayer = useCallback((playerId: number) => {
-    if (!isHost || playerId === hostIdRef.current) return;
-    send('kicked', { targetId: playerId });
+    if (!isHostRef.current || playerId === hostIdRef.current) return;
+    const peer = hostPeersRef.current.get(playerId);
+    if (peer) {
+      void sendPrivateToPeer(peer, 'kicked', { reason: 'removed_by_host' })
+        .finally(() => closeHostPeer(playerId));
+    }
     cancelDisconnectTimer(playerId);
+    seatLedgerRef.current = seatLedgerRef.current.filter((entry) => entry.playerId !== playerId);
+    for (const [knownClientId, knownPlayerId] of clientPlayerMapRef.current) {
+      if (knownPlayerId === playerId) clientPlayerMapRef.current.delete(knownClientId);
+    }
 
     const updatedLobby = lobbyPlayersRef.current.filter((p) => p.id !== playerId);
     commitLobby(updatedLobby, { countdownEndsAt: null });
@@ -1550,78 +2610,112 @@ export function useMultiplayer(
     const gs = hostGameRef.current;
     if (!gs) return;
     commitHostState(removePlayer(gs, playerId));
-  }, [isHost, commitLobby, commitHostState, cancelDisconnectTimer, send]);
+  }, [
+    cancelDisconnectTimer,
+    closeHostPeer,
+    commitHostState,
+    commitLobby,
+    sendPrivateToPeer,
+  ]);
 
   // Host libera quem chegou no meio do jogo. Ganha assento e mão na próxima
   // rodada.
   const approveJoin = useCallback((joinerClientId: string) => {
-    if (!isHost) return;
+    if (!isHostRef.current) return;
     const pending = pendingJoinsRef.current.find((p) => p.clientId === joinerClientId);
-    if (!pending) return;
+    const handshake = pendingHandshakesRef.current.get(joinerClientId);
+    if (!pending || !handshake) return;
     if (!hasAvailableSeat(lobbyPlayersRef.current.length)) {
-      send('join_rejected', { clientId: joinerClientId, reason: 'room_full' });
+      void sendJoinStatusRef.current(joinerClientId, 'join_rejected', 'room_full');
       setPendingJoins((prev) => prev.filter((p) => p.clientId !== joinerClientId));
       return;
     }
 
     const playerId = nextPlayerIdRef.current++;
     clientPlayerMapRef.current.set(joinerClientId, playerId);
-
     const newcomer = normalizeLobbyPlayer({
       id: playerId,
       name: pending.name,
       ready: false,
       appearance: pending.appearance,
     });
-    const updated = [...lobbyPlayersRef.current, newcomer];
-    commitLobby(updated, { countdownEndsAt: null });
-
-    pendingSeatsRef.current = [...pendingSeatsRef.current, {
-      id: playerId,
-      name: pending.name,
-      appearance: pending.appearance,
-    }];
-    setPendingJoins((prev) => prev.filter((p) => p.clientId !== joinerClientId));
-
-    send('welcome', { clientId: joinerClientId, playerId });
-    if (hostGameRef.current) broadcastState(hostGameRef.current);
-  }, [isHost, commitLobby, broadcastState, send]);
+    void (async () => {
+      const token = createSeatToken();
+      const tokenHash = await hashSeatToken(token);
+      seatLedgerRef.current = [
+        ...seatLedgerRef.current,
+        { playerId, tokenHash, publicKey: handshake.publicKey },
+      ];
+      commitLobby([...lobbyPlayersRef.current, newcomer], { countdownEndsAt: null });
+      const accepted = await issueWelcomeRef.current(handshake, playerId, token);
+      if (!accepted) {
+        clientPlayerMapRef.current.delete(joinerClientId);
+        seatLedgerRef.current = seatLedgerRef.current.filter((entry) => entry.playerId !== playerId);
+        commitLobby(lobbyPlayersRef.current.filter((player) => player.id !== playerId), {
+          countdownEndsAt: null,
+        });
+        return;
+      }
+      pendingSeatsRef.current = [...pendingSeatsRef.current, {
+        id: playerId,
+        name: pending.name,
+        appearance: pending.appearance,
+      }];
+      setPendingJoins((previous) => previous.filter((item) => item.clientId !== joinerClientId));
+    })();
+  }, [commitLobby]);
 
   const rejectJoin = useCallback((joinerClientId: string) => {
-    if (!isHost) return;
-    send('join_rejected', { clientId: joinerClientId });
+    if (!isHostRef.current) return;
+    void sendJoinStatusRef.current(joinerClientId, 'join_rejected', 'rejected_by_host')
+      .finally(() => pendingHandshakesRef.current.delete(joinerClientId));
     setPendingJoins((prev) => prev.filter((p) => p.clientId !== joinerClientId));
-  }, [isHost, send]);
+  }, []);
 
   const leaveLobby = useCallback(() => {
-    if (myPlayerIdRef.current !== null) {
-      send('leave_lobby', { playerId: myPlayerIdRef.current });
-    }
+    leavingRef.current = true;
+    const leaveRequest = !isHostRef.current && myPlayerIdRef.current !== null
+      ? sendSecureRequestRef.current({ type: 'leave', scope: 'lobby' })
+      : Promise.resolve(false);
+    clearRoomSession(sessionStorage, sessionKey);
+    clearRoomSession(sessionStorage, contextKey);
     try { sessionStorage.removeItem(pidKey); } catch { /* melhor esforço */ }
+    credentialRef.current = null;
     myPlayerIdRef.current = null;
     setMyPlayerId(null);
-    if (channelRef.current) supabase.removeChannel(channelRef.current);
-  }, [pidKey, send]);
+    setIsConnected(false);
+    const closeChannels = async () => {
+      if (guestPrivateChannelRef.current) {
+        await supabase.removeChannel(guestPrivateChannelRef.current);
+        guestPrivateChannelRef.current = null;
+      }
+      if (channelRef.current) await supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    };
+    if (!isHostRef.current) {
+      void leaveRequest.finally(closeChannels);
+    } else {
+      try { sessionStorage.removeItem('sp-host-room'); } catch { /* melhor esforço */ }
+      void closeChannels();
+    }
+  }, [contextKey, pidKey, sessionKey]);
 
   const disconnect = useCallback(async () => {
     const channel = channelRef.current;
-    if (!channel) return;
-
     const playerId = myPlayerIdRef.current;
     const currentGame = gameStateRef.current;
     const gameOn = !!currentGame && currentGame.phase !== 'setup' && currentGame.phase !== 'game-end';
 
     if (!isHostRef.current && playerId !== null && gameOn) {
       try {
-        await channel.send({
-          type: 'broadcast',
-          event: 'leave_game',
-          payload: { playerId },
-        });
+        await sendSecureRequestRef.current({ type: 'leave', scope: 'game' });
       } catch {
         // A presença também detecta a saída; este evento só elimina a espera.
       }
     }
+
+    leavingRef.current = true;
+    setIsConnected(false);
 
     if (isHostRef.current && playerId !== null) {
       try {
@@ -1632,7 +2726,15 @@ export function useMultiplayer(
       } catch { /* melhor esforço */ }
     }
 
-    await supabase.removeChannel(channel);
+    if (guestPrivateChannelRef.current) {
+      await supabase.removeChannel(guestPrivateChannelRef.current);
+      guestPrivateChannelRef.current = null;
+    }
+    for (const peer of hostPeersRef.current.values()) {
+      await supabase.removeChannel(peer.channel);
+    }
+    hostPeersRef.current.clear();
+    if (channel) await supabase.removeChannel(channel);
     if (channelRef.current === channel) channelRef.current = null;
   }, [pidKey]);
 

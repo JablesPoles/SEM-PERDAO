@@ -19,11 +19,35 @@ import {
   votingChoicesFor,
 } from '@/lib/game';
 import { projectMesaView } from '@/lib/three/mesaView';
-import { isMuted, setMuted } from '@/lib/sounds';
+import {
+  AUDIO_CHANNELS,
+  getAudioChannelVolume,
+  isAudioChannelEnabled,
+  isMuted,
+  setAudioChannelEnabled,
+  setAudioChannelVolume,
+  setMuted,
+  type AudioChannel,
+} from '@/lib/sounds';
 import { setMusicScene, startAmbience, stopAllMusic } from '@/lib/music';
 import { narrate, preloadNarration, type NarrationEvent } from '@/lib/narrator';
-import type { Ato, Reacao3D, RetroMesa } from '@/lib/three/retroMesa';
+import type { Ato, Qualidade3D, Reacao3D, RetroMesa } from '@/lib/three/retroMesa';
 import type { BlackCard, ChatMessage, GameState, Reaction, WhiteCard } from '@/lib/types';
+import {
+  detectDeviceProfile,
+  downgradedQuality,
+  nextQualityPreference,
+  normalizeQualityPreference,
+  normalizeTableView,
+  presentationProfile,
+  resolveEffectiveQuality,
+  TABLE_QUALITY_KEY,
+  TABLE_VIEW_KEY,
+  type DeviceProfile,
+  type EffectiveQuality,
+  type QualityPreference,
+  type TableViewMode,
+} from '@/lib/presentationPreferences';
 
 interface MesaOnlineProps {
   state: GameState;
@@ -74,6 +98,12 @@ const ARREMESSOS: { tipo: Reacao3D; emoji: string; rotulo: string }[] = [
   { tipo: 'sapato', emoji: '👞', rotulo: 'SAPATO' },
   { tipo: 'rosa', emoji: '🌹', rotulo: 'ROSA' },
 ];
+
+const AUDIO_LABEL: Record<AudioChannel, { label: string; icon: string }> = {
+  effects: { label: 'EFEITOS', icon: '✦' },
+  music: { label: 'MÚSICA', icon: '♪' },
+  narration: { label: 'NARRAÇÃO', icon: '◖' },
+};
 
 const POSICOES_REACAO = [
   { esquerda: 26, topo: 31, giro: -7 },
@@ -155,10 +185,42 @@ export function MesaOnline(props: MesaOnlineProps) {
   const processedMessages = useRef(new Set<string>());
   const processedReactions = useRef(new Set<string>());
   const contadorReacaoRef = useRef(0);
+  const [viewMode, setViewMode] = useState<TableViewMode>('3d');
+  const [qualityPreference, setQualityPreference] = useState<QualityPreference>('auto');
+  const [deviceProfile, setDeviceProfile] = useState<DeviceProfile>({
+    width: 1024,
+    height: 768,
+    devicePixelRatio: 1,
+    hardwareConcurrency: null,
+    deviceMemoryGb: null,
+  });
+  const [adaptiveQuality, setAdaptiveQuality] = useState<EffectiveQuality | null>(null);
+  const resolvedQuality = useMemo(
+    () => resolveEffectiveQuality(qualityPreference, deviceProfile),
+    [qualityPreference, deviceProfile]
+  );
+  const effectiveQuality = qualityPreference === 'auto'
+    ? adaptiveQuality ?? resolvedQuality
+    : resolvedQuality;
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const qualityRef = useRef(effectiveQuality);
+  const qualityPreferenceRef = useRef(qualityPreference);
 
   const [pronto, setPronto] = useState(false);
   const [webglError, setWebglError] = useState(false);
+  const [sceneRevision, setSceneRevision] = useState(0);
   const [somMudo, setSomMudo] = useState(false);
+  const [audioAberto, setAudioAberto] = useState(false);
+  const [audioChannels, setAudioChannels] = useState<Record<AudioChannel, boolean>>({
+    effects: true,
+    music: true,
+    narration: true,
+  });
+  const [audioVolumes, setAudioVolumes] = useState<Record<AudioChannel, number>>({
+    effects: 0.9,
+    music: 0.58,
+    narration: 0.9,
+  });
   const [anuncio, setAnuncio] = useState<{ texto: string; tipo: 'normal' | 'stamp'; duracao?: number } | null>(null);
   const [reacoesTela, setReacoesTela] = useState<ReacaoTela[]>([]);
 
@@ -172,11 +234,38 @@ export function MesaOnline(props: MesaOnlineProps) {
   const [resultRestante, setResultRestante] = useState(0);
 
   useEffect(() => {
+    qualityRef.current = effectiveQuality;
+    qualityPreferenceRef.current = qualityPreference;
+  }, [effectiveQuality, qualityPreference]);
+
+  useEffect(() => {
+    const updateDevice = () => setDeviceProfile(detectDeviceProfile());
+    const hydratePreferences = () => {
+      try {
+        setViewMode(normalizeTableView(localStorage.getItem(TABLE_VIEW_KEY)));
+        setQualityPreference(normalizeQualityPreference(localStorage.getItem(TABLE_QUALITY_KEY)));
+      } catch { /* preferências são melhor esforço */ }
+    };
+    const motion = matchMedia('(prefers-reduced-motion: reduce)');
+    const updateMotion = () => setReducedMotion(motion.matches);
+    hydratePreferences();
+    updateDevice();
+    updateMotion();
+    window.addEventListener('resize', updateDevice, { passive: true });
+    motion.addEventListener?.('change', updateMotion);
+    return () => {
+      window.removeEventListener('resize', updateDevice);
+      motion.removeEventListener?.('change', updateMotion);
+    };
+  }, []);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       setPlacarAberto(false);
       setChatAberto(false);
       setRodaAberta(false);
+      setAudioAberto(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -224,19 +313,39 @@ export function MesaOnline(props: MesaOnlineProps) {
 
   // ── ciclo de vida da cena (idêntico à mesa que já funcionava) ──
   useEffect(() => {
+    if (viewMode !== '3d') return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     let disposed = false;
-    const muteFrame = requestAnimationFrame(() => setSomMudo(isMuted()));
+    const muteFrame = requestAnimationFrame(() => {
+      setSomMudo(isMuted());
+      setAudioChannels({
+        effects: isAudioChannelEnabled('effects'),
+        music: isAudioChannelEnabled('music'),
+        narration: isAudioChannelEnabled('narration'),
+      });
+      setAudioVolumes({
+        effects: getAudioChannelVolume('effects'),
+        music: getAudioChannelVolume('music'),
+        narration: getAudioChannelVolume('narration'),
+      });
+    });
     const start = async () => {
       try {
         await document.fonts.ready;
         const { RetroMesa: Scene } = await import('@/lib/three/retroMesa');
         if (disposed) return;
+        const profile = presentationProfile(qualityRef.current);
+        const sceneQuality: Record<EffectiveQuality, Qualidade3D> = {
+          high: 'alta',
+          medium: 'media',
+          low: 'baixa',
+        };
         const scene = new Scene(canvas, {
           mesaView: viewRef.current,
-          pixelSize: 1,
-          qualidade: 'alta',
+          pixelSize: profile.pixelSize,
+          qualidade: sceneQuality[profile.quality],
+          reducedMotion,
           onSelfImpact: (kind) => spawnReacaoTela(kind === 'tomate' ? '🍅' : kind === 'sapato' ? '👞' : '🌹', 'EM VOCÊ'),
         });
         const initialAto: Ato = viewRef.current.phase === 'judging'
@@ -248,10 +357,21 @@ export function MesaOnline(props: MesaOnlineProps) {
               : 'pov';
         scene.setAto(initialAto);
         sceneRef.current = scene;
+        canvas.dataset.quality = profile.quality;
+        const readyDetail = {
+          metrics: scene.performanceMetrics(),
+          framing: scene.framingReport(),
+          act: initialAto,
+        };
+        window.dispatchEvent(new CustomEvent('semperdao:3d-ready', { detail: readyDetail }));
         setPronto(true);
-        const resize = () => scene.resize();
-        window.addEventListener('resize', resize);
-        (scene as RetroMesa & { __resize?: () => void }).__resize = resize;
+        if (qualityPreferenceRef.current === 'auto') {
+          void scene.runPerformanceBenchmark(5000).then((result) => {
+            if (!result || disposed || qualityPreferenceRef.current !== 'auto') return;
+            window.dispatchEvent(new CustomEvent('semperdao:3d-benchmark', { detail: result }));
+            setAdaptiveQuality(downgradedQuality(qualityRef.current, result));
+          });
+        }
       } catch (error) {
         console.error('Falha ao iniciar a mesa 3D', error);
         setWebglError(true);
@@ -266,12 +386,29 @@ export function MesaOnline(props: MesaOnlineProps) {
       disposed = true;
       cancelAnimationFrame(muteFrame);
       stopAllMusic();
-      const scene = sceneRef.current as (RetroMesa & { __resize?: () => void }) | null;
-      if (scene?.__resize) window.removeEventListener('resize', scene.__resize);
-      scene?.dispose();
+      sceneRef.current?.dispose();
       sceneRef.current = null;
+      setPronto(false);
     };
-  }, []);
+    // A cena só renasce ao alternar 2D/3D; qualidade e movimento são mutáveis.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, sceneRevision]);
+
+  useEffect(() => {
+    const profile = presentationProfile(effectiveQuality);
+    const quality: Record<EffectiveQuality, Qualidade3D> = {
+      high: 'alta',
+      medium: 'media',
+      low: 'baixa',
+    };
+    sceneRef.current?.setQualidade(quality[profile.quality]);
+    sceneRef.current?.setPixelSize(profile.pixelSize);
+    if (canvasRef.current) canvasRef.current.dataset.quality = profile.quality;
+  }, [effectiveQuality]);
+
+  useEffect(() => {
+    sceneRef.current?.setReducedMotion(reducedMotion);
+  }, [reducedMotion]);
 
   // reconcilia a cena a cada mudança de estado
   useEffect(() => {
@@ -459,6 +596,30 @@ export function MesaOnline(props: MesaOnlineProps) {
     sceneRef.current?.setSomAtivo(!novoMudo);
   };
 
+  const toggleAudioChannel = (channel: AudioChannel) => {
+    const enabled = !audioChannels[channel];
+    setAudioChannelEnabled(channel, enabled);
+    setAudioChannels((current) => ({ ...current, [channel]: enabled }));
+    if (channel === 'music' && enabled && !somMudo) sceneRef.current?.setSomAtivo(true);
+  };
+
+  const changeAudioVolume = (channel: AudioChannel, volume: number) => {
+    setAudioChannelVolume(channel, volume);
+    setAudioVolumes((current) => ({ ...current, [channel]: volume }));
+  };
+
+  const chooseViewMode = (mode: TableViewMode) => {
+    setViewMode(mode);
+    try { localStorage.setItem(TABLE_VIEW_KEY, mode); } catch { /* melhor esforço */ }
+  };
+
+  const cycleQuality = () => {
+    const next = nextQualityPreference(qualityPreference);
+    setAdaptiveQuality(null);
+    setQualityPreference(next);
+    try { localStorage.setItem(TABLE_QUALITY_KEY, next); } catch { /* melhor esforço */ }
+  };
+
   const alternarCarta = (id: string) => {
     setSelection((atual) => {
       const ids = atual.key === selectionKey ? atual.ids : [];
@@ -497,8 +658,30 @@ export function MesaOnline(props: MesaOnlineProps) {
     setChatTexto('');
   };
 
-  if (webglError) {
-    return <GameBoard {...props} />;
+  if (viewMode === '2d' || webglError) {
+    return (
+      <div className="relative min-h-screen">
+        <GameBoard {...props} />
+        <div className="fixed top-3 right-3 z-[70] flex items-center gap-2">
+          {webglError && (
+            <span className="hidden sm:inline bg-ink/95 border border-red/50 text-paper/70 px-2.5 py-2 text-[8px] font-black tracking-[0.12em]">
+              3D INDISPONÍVEL
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setWebglError(false);
+              chooseViewMode('3d');
+              setSceneRevision((revision) => revision + 1);
+            }}
+            className="h-9 px-3 bg-ink text-paper border border-paper/25 hover:border-red font-black text-[9px] tracking-[0.14em] shadow-[3px_4px_0_rgba(0,0,0,.35)]"
+          >
+            ◈ {webglError ? 'TENTAR 3D' : 'MESA 3D'}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // ── dados do julgamento / veredito ──
@@ -525,6 +708,27 @@ export function MesaOnline(props: MesaOnlineProps) {
         aria-label="Mesa 3D; arraste para olhar ao redor"
       />
 
+      {/* Preferências de apresentação: não alteram a partida nem recarregam a sala. */}
+      <div className="absolute top-0 left-0 z-40 p-2 sm:p-6 pointer-events-auto flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => chooseViewMode('2d')}
+          aria-label="Usar mesa 2D"
+          className="h-9 px-2.5 sm:px-3 bg-ink/90 text-paper/75 border border-paper/20 hover:text-paper hover:border-red font-black text-[9px] tracking-[0.14em] shadow-[3px_4px_0_rgba(0,0,0,.4)]"
+        >
+          ◫ <span className="hidden sm:inline">2D</span>
+        </button>
+        <button
+          type="button"
+          onClick={cycleQuality}
+          aria-label={`Qualidade 3D: ${qualityPreference}`}
+          title="Alternar qualidade: auto, alta, média ou leve"
+          className="h-9 px-2.5 sm:px-3 bg-ink/90 text-paper/60 border border-paper/20 hover:text-paper hover:border-paper/40 font-black text-[8px] tracking-[0.12em] shadow-[3px_4px_0_rgba(0,0,0,.4)]"
+        >
+          {qualityPreference === 'auto' ? 'AUTO' : effectiveQuality === 'high' ? 'ALTA' : effectiveQuality === 'medium' ? 'MÉDIA' : 'LEVE'}
+        </button>
+      </div>
+
       {/* topo centro: a rodada */}
       <div className="absolute top-0 inset-x-0 flex justify-center p-4 sm:p-6 pointer-events-none">
         <div className="bg-ink/90 border border-paper/20 px-4 py-2 text-center shadow-[4px_5px_0_rgba(0,0,0,.48)]">
@@ -539,30 +743,79 @@ export function MesaOnline(props: MesaOnlineProps) {
       </div>
 
       {/* topo direito: placar (abre o zoom), som e chat */}
-      <div className="absolute top-0 right-0 p-4 sm:p-6 pointer-events-auto flex items-center gap-2">
+      <div className="absolute top-0 right-0 z-40 p-2 sm:p-6 pointer-events-auto flex items-center gap-1.5 sm:gap-2">
         <button
           onClick={() => setPlacarAberto(true)}
           aria-label="Ver o placar"
           className="h-9 px-3 bg-ink/90 text-paper/80 border border-paper/20 hover:text-paper hover:border-red active:translate-y-0.5 font-black text-[9px] tracking-[0.16em] shadow-[3px_4px_0_rgba(0,0,0,.4)] transition-all"
         >
-          ▤ PLACAR
+          ▤ <span className="hidden sm:inline">PLACAR</span>
         </button>
         <button
-          onClick={trocarSom}
-          aria-label={somMudo ? 'Ativar som' : 'Silenciar som'}
-          className="h-9 px-3 bg-ink/90 text-paper/70 border border-paper/20 hover:text-paper hover:border-paper/40 active:translate-y-0.5 font-black text-[9px] tracking-[0.16em] shadow-[3px_4px_0_rgba(0,0,0,.4)] transition-all"
+          onClick={() => setAudioAberto((aberto) => !aberto)}
+          aria-label="Configurar áudio"
+          aria-expanded={audioAberto}
+          className={`h-9 px-3 border hover:text-paper hover:border-paper/40 active:translate-y-0.5 font-black text-[9px] tracking-[0.16em] shadow-[3px_4px_0_rgba(0,0,0,.4)] transition-all ${audioAberto ? 'bg-red text-ink border-red' : 'bg-ink/90 text-paper/70 border-paper/20'}`}
         >
-          {somMudo ? 'SOM OFF' : '♪ SOM'}
+          {somMudo ? '×' : '♪'} <span className="hidden sm:inline">{somMudo ? 'SOM OFF' : 'SOM'}</span>
         </button>
         <button
           onClick={() => setChatAberto((aberto) => !aberto)}
           aria-expanded={chatAberto}
           className={`relative h-9 px-3 border font-black text-[9px] tracking-[0.16em] shadow-[3px_4px_0_rgba(0,0,0,.4)] transition-all ${chatAberto ? 'bg-red text-ink border-red' : 'bg-ink/90 text-paper/80 border-paper/20 hover:border-paper/45'}`}
         >
-          ▰ CHAT
+          ▰ <span className="hidden sm:inline">CHAT</span>
           <span className="ml-1 font-mono text-[8px] opacity-70">{Math.min(props.messages.length, 99)}</span>
         </button>
       </div>
+
+      {audioAberto && (
+        <section className="absolute top-12 sm:top-20 right-2 sm:right-6 z-50 w-52 bg-[#111015]/97 border border-paper/25 p-2.5 shadow-[5px_7px_0_rgba(0,0,0,.48)] pointer-events-auto">
+          <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-paper/15">
+            <div>
+              <p className="font-display text-paper text-[10px] tracking-[0.12em]">MIXER DO PORÃO</p>
+              <p className="text-paper/35 text-[6px] font-black tracking-[0.16em] mt-0.5">CANAIS INDEPENDENTES</p>
+            </div>
+            <button
+              type="button"
+              onClick={trocarSom}
+              className={`h-7 px-2 border text-[7px] font-black tracking-[0.12em] ${somMudo ? 'bg-red text-ink border-red' : 'bg-paper/5 text-paper/65 border-paper/20'}`}
+            >
+              {somMudo ? 'LIGAR TUDO' : 'MUDO GERAL'}
+            </button>
+          </div>
+          <div className="grid gap-1.5">
+            {AUDIO_CHANNELS.map((channel) => {
+              const enabled = audioChannels[channel];
+              return (
+                <div key={channel} className={`border px-2 py-1.5 ${enabled ? 'bg-paper/[.07] border-paper/20' : 'border-paper/10'}`}>
+                  <button
+                    type="button"
+                    onClick={() => toggleAudioChannel(channel)}
+                    aria-pressed={enabled}
+                    className={`w-full h-6 flex items-center gap-2 text-left ${enabled ? 'text-paper' : 'text-paper/35'}`}
+                  >
+                    <span className="w-4 text-center text-sm">{AUDIO_LABEL[channel].icon}</span>
+                    <span className="flex-1 text-[8px] font-black tracking-[0.14em]">{AUDIO_LABEL[channel].label}</span>
+                    <span className={`h-2 w-2 rounded-full ${enabled ? 'bg-red' : 'bg-paper/15'}`} />
+                  </button>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={audioVolumes[channel]}
+                    onChange={(event) => changeAudioVolume(channel, Number(event.target.value))}
+                    aria-label={`Volume de ${AUDIO_LABEL[channel].label.toLowerCase()}`}
+                    disabled={!enabled}
+                    className="block w-full h-3 accent-[#ff3b2f] disabled:opacity-25"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* placar em zoom: modal legível, fecha no ESC ou clique fora */}
       {placarAberto && (

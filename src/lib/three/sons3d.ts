@@ -7,6 +7,7 @@
 import {
   getAudioContext,
   getAudioDestination,
+  isAudioChannelEnabled,
   isMuted,
   resumeAudio,
 } from '@/lib/sounds';
@@ -96,8 +97,8 @@ function tom(
 }
 
 function executarEfeito(audio: AudioContext, fn: (audio: AudioContext, bus: AudioNode) => void) {
-  const destination = getAudioDestination();
-  if (!destination || destination.context !== audio || isMuted()) return;
+  const destination = getAudioDestination('effects');
+  if (!destination || destination.context !== audio || isMuted() || !isAudioChannelEnabled('effects')) return;
 
   // Cada reação ganha headroom próprio antes do limiter global. Isso mantém
   // uma salva de palmas/risadas forte, mas impede a soma de estourar o mixer.
@@ -109,7 +110,7 @@ function executarEfeito(audio: AudioContext, fn: (audio: AudioContext, bus: Audi
 }
 
 function tocar(fn: (audio: AudioContext, bus: AudioNode) => void) {
-  if (isMuted()) return;
+  if (isMuted() || !isAudioChannelEnabled('effects')) return;
   const requestedAt = Date.now();
   const audio = getAudioContext();
   if (!audio) return;
@@ -117,7 +118,7 @@ function tocar(fn: (audio: AudioContext, bus: AudioNode) => void) {
   const play = (running: AudioContext) => {
     // Efeitos automáticos bloqueados por autoplay não devem chegar atrasados em
     // bloco no primeiro clique do jogador.
-    if (Date.now() - requestedAt > 600 || isMuted()) return;
+    if (Date.now() - requestedAt > 600 || isMuted() || !isAudioChannelEnabled('effects')) return;
     executarEfeito(running, fn);
   };
 
@@ -128,8 +129,8 @@ function tocar(fn: (audio: AudioContext, bus: AudioNode) => void) {
 }
 
 function montarAmbiente(audio: AudioContext, pedido: number) {
-  if (pedido !== ambientePedido || ambiente || isMuted()) return;
-  const destination = getAudioDestination();
+  if (pedido !== ambientePedido || ambiente || isMuted() || !isAudioChannelEnabled('music')) return;
+  const destination = getAudioDestination('music');
   if (!destination || destination.context !== audio) return;
 
   const bus = audio.createGain();
@@ -202,7 +203,7 @@ function montarAmbiente(audio: AudioContext, pedido: number) {
  * liberado por um gesto; pedidos cancelados não deixam fontes órfãs tocando.
  */
 export function iniciarAmbiente() {
-  if (ambiente || isMuted()) return;
+  if (ambiente || isMuted() || !isAudioChannelEnabled('music')) return;
   const activation = navigator.userActivation;
   if (activation && !activation.hasBeenActive) return;
   const pedido = ++ambientePedido;

@@ -34,7 +34,11 @@ export function setMusicScene(scene: MusicScene): void {
   const track = SCENE_TRACK[scene];
   void loadAsset(track.path).then((buffer) => {
     if (!buffer || currentScene !== scene) return;
-    const handle = playAsset(track.path, { loop: scene !== 'finale', gain: 0.0001 });
+    const handle = playAsset(track.path, {
+      loop: scene !== 'finale',
+      gain: 0.0001,
+      channel: 'music',
+    });
     if (!handle) return;
     musicHandle = handle;
     handle.setGain(track.gain, CROSSFADE);
@@ -46,7 +50,7 @@ export function startAmbience(gain = 0.35): void {
   if (ambienceHandle) return;
   void loadAsset(AMBIENCE_PATH).then((buffer) => {
     if (!buffer || ambienceHandle) return;
-    const handle = playAsset(AMBIENCE_PATH, { loop: true, gain: 0.0001 });
+    const handle = playAsset(AMBIENCE_PATH, { loop: true, gain: 0.0001, channel: 'music' });
     if (!handle) return;
     ambienceHandle = handle;
     handle.setGain(gain, 2.5);

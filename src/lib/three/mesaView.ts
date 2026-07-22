@@ -6,6 +6,14 @@ import type {
   GameState,
   TurnLimit,
 } from '../types';
+import {
+  CULTIST_ACCESSORIES,
+  CULTIST_ACCENTS,
+  CULTIST_FACES,
+  CULTIST_HOODS,
+  CULTIST_ROBES,
+  DEFAULT_CULTIST_APPEARANCE,
+} from '../types.ts';
 
 const FULL_TURN = Math.PI * 2;
 
@@ -61,19 +69,20 @@ function viewWinnerIds(gs: GameState): number[] {
 }
 
 function viewAppearance(value: CultistAppearance | undefined): CultistAppearance {
-  const robe = value?.robe;
-  const hood = value?.hood;
-  const face = value?.face;
-  const accent = value?.accent;
-  const accessory = value?.accessory;
+  const valid = <T extends string>(values: readonly T[], candidate: unknown, fallback: T): T =>
+    typeof candidate === 'string' && values.includes(candidate as T)
+      ? candidate as T
+      : fallback;
   return {
-    robe: robe === 'ash' || robe === 'midnight' || robe === 'moss' ? robe : 'blood',
-    hood: hood === 'spire' || hood === 'shrouded' ? hood : 'classic',
-    face: face === 'ember' || face === 'grin' || face === 'weeping' ? face : 'void',
-    accent: accent === 'brass' || accent === 'scarlet' || accent === 'cyan' ? accent : 'bone',
-    accessory: accessory === 'chain' || accessory === 'candle' || accessory === 'relic'
-      ? accessory
-      : 'none',
+    robe: valid(CULTIST_ROBES, value?.robe, DEFAULT_CULTIST_APPEARANCE.robe),
+    hood: valid(CULTIST_HOODS, value?.hood, DEFAULT_CULTIST_APPEARANCE.hood),
+    face: valid(CULTIST_FACES, value?.face, DEFAULT_CULTIST_APPEARANCE.face),
+    accent: valid(CULTIST_ACCENTS, value?.accent, DEFAULT_CULTIST_APPEARANCE.accent),
+    accessory: valid(
+      CULTIST_ACCESSORIES,
+      value?.accessory,
+      DEFAULT_CULTIST_APPEARANCE.accessory
+    ),
   };
 }
 
